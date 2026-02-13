@@ -1,163 +1,113 @@
 from flask import Flask, request, jsonify
-from PIL import Image
+from PIL import Image, ImageOps
 import numpy as np
-import cv2
 import json
-import os
+import io
 
 app = Flask(__name__)
 
+# Cargar layout
 with open("plantilla_layout.json", "r") as f:
     layout = json.load(f)
 
-def detectar_hoja_por_marcas(img_gray):
-    """
-    Detecta las 4 marcas negras de las esquinas y corrige perspectiva
-    """
-    blur = cv2.GaussianBlur(img_gray, (5,5), 0)
-    _, thresh = cv2.threshold(blur, 120, 255, cv2.THRESH_BINARY_INV)
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    candidatos = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area > 2000:  # marcas negras grandes
-            x,y,w,h = cv2.boundingRect(c)
-            ratio = w/h if h != 0 else 0
-            if 0.5 < ratio < 1.5:
-                candidatos.append((x,y,w,h))
-
-    if len(candidatos) < 4:
-        return img_gray  # fallback si no detecta marcas
-
-    # Ordenar por posición (esquinas)
-    candidatos = sorted(candidatos, key=lambda b: b[0]+b[1])
-
-    pts = []
-    for (x,y,w,h) in candidatos[:4]:
-        pts.append([x+w//2, y+h//2])
-
-    pts = np.array(pts, dtype="float32")
-
-    # Orden: TL, TR, BL, BR
-    pts = pts[np.argsort(pts[:,1])]
-    top = pts[:2]
-    bottom = pts[2:]
-
-    top = top[np.argsort(top[:,0])]
-    bottom = bottom[np.argsort(bottom[:,0])]
-
-    rect = np.array([top[0], top[1], bottom[0], bottom[1]], dtype="float32")
-
-    ancho = 1000
-    alto = 1400
-
-    dst = np.array([
-        [0,0],
-        [ancho,0],
-        [0,alto],
-        [ancho,alto]
-    ], dtype="float32")
-
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(img_gray, M, (ancho, alto))
-
-    return warped
-
-
 @app.route("/omr/leer", methods=["POST"])
 def leer_omr():
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "No file"}), 400
+
+    file = request.files["file"]
+
     try:
-        if "file" not in request.files:
-            return jsonify({"ok": False, "error": "No se envió archivo"})
+        # Abrir imagen y corregir orientación (clave para móviles)
+        img = Image.open(file.stream)
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("L")  # escala de grises
+    except:
+        return jsonify({"ok": False, "error": "Imagen inválida"}), 400
 
-        file = request.files["file"]
+    # 🔥 TAMAÑO REALISTA (A4 escaneado / móvil)
+    ANCHO = 1000
+    ALTO = 1400  # <-- CORREGIDO (antes tenías 1401400)
 
-        # Convertir imagen a OpenCV
-        img_pil = Image.open(file.stream).convert("RGB")
-        img_np = np.array(img_pil)
-        img_gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    img = img.resize((ANCHO, ALTO))
+    img_np = np.array(img)
 
-        # 🔧 CORRECCIÓN AUTOMÁTICA PARA MÓVIL
-        hoja = detectar_hoja_por_marcas(img_gray)
+    # Mejor umbral para fotos móviles (más tolerante)
+    thresh = img_np < 160  # antes 180 (demasiado agresivo)
 
-        # Binarización optimizada para lápiz
-        blur = cv2.GaussianBlur(hoja, (5,5), 0)
-        thresh = cv2.adaptiveThreshold(
-            blur, 255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            25, 10
-        )
+    lay = layout["layout"]
 
-        ANCHO = 1000
-        ALTO = 1400
+    # Zona de respuestas (relativa)
+    x0 = int(lay["zona_respuestas"]["x0_rel"] * ANCHO)
+    y0 = int(lay["zona_respuestas"]["y0_rel"] * ALTO)
+    ancho = int(lay["zona_respuestas"]["ancho_rel"] * ANCHO)
+    alto = int(lay["zona_respuestas"]["alto_rel"] * ALTO)
 
-        lay = layout["layout"]
+    # Protección contra recortes fuera de rango (fotos torcidas)
+    x1 = min(x0 + ancho, ANCHO)
+    y1 = min(y0 + alto, ALTO)
 
-        x0 = int(lay["zona_respuestas"]["x0_rel"] * ANCHO)
-        y0 = int(lay["zona_respuestas"]["y0_rel"] * ALTO)
-        ancho = int(lay["zona_respuestas"]["ancho_rel"] * ANCHO)
-        alto = int(lay["zona_respuestas"]["alto_rel"] * ALTO)
+    zona = thresh[y0:y1, x0:x1]
 
-        zona = thresh[y0:y0+alto, x0:x0+ancho]
+    offset_y = lay["filas"]["offset_y_rel"]
+    alto_celda = lay["filas"]["alto_celda_rel"]
+    ancho_celda = lay["casilla"]["ancho_rel"]
 
-        offset_y = lay["filas"]["offset_y_rel"]
-        alto_celda = lay["filas"]["alto_celda_rel"]
-        ancho_celda = lay["casilla"]["ancho_rel"]
+    col_offsets = {
+        "A": lay["columnas"]["A"]["offset_x_rel"],
+        "B": lay["columnas"]["B"]["offset_x_rel"],
+        "C": lay["columnas"]["C"]["offset_x_rel"],
+        "D": lay["columnas"]["D"]["offset_x_rel"]
+    }
 
-        col_offsets = {
-            "A": lay["columnas"]["A"]["offset_x_rel"],
-            "B": lay["columnas"]["B"]["offset_x_rel"],
-            "C": lay["columnas"]["C"]["offset_x_rel"],
-            "D": lay["columnas"]["D"]["offset_x_rel"]
-        }
+    num_preguntas = layout["num_preguntas"]
+    opciones = layout["opciones"]
 
-        num_preguntas = layout["num_preguntas"]
-        opciones = layout["opciones"]
+    respuestas = {}
 
-        respuestas = {}
+    for i in range(num_preguntas):
+        fila_y = int(i * offset_y * alto)
 
-        for i in range(num_preguntas):
-            fila_y = int(i * offset_y * alto)
-            scores = []
+        # Evitar overflow si la foto está desplazada
+        if fila_y + 5 >= zona.shape[0]:
+            respuestas[str(i+1)] = "BLANCO"
+            continue
 
-            for letra in opciones:
-                col_x = int(col_offsets[letra] * ancho)
-                w = int(ancho_celda * ancho)
-                h = int(alto_celda * alto)
+        intensidades = []
 
-                celda = zona[fila_y:fila_y+h, col_x:col_x+w]
+        for letra in opciones:
+            col_x = int(col_offsets[letra] * ancho)
+            w = int(ancho_celda * ancho)
+            h = int(alto_celda * alto)
 
-                if celda.size == 0:
-                    scores.append(0)
-                    continue
+            # Protección de límites (crucial en fotos móviles)
+            x_end = min(col_x + w, zona.shape[1])
+            y_end = min(fila_y + h, zona.shape[0])
 
-                # % de píxeles negros (perfecto para lápiz)
-                score = cv2.countNonZero(celda) / (w*h)
-                scores.append(score)
+            celda = zona[fila_y:y_end, col_x:x_end]
 
-            max_score = max(scores)
-            marcadas = sum(s > 0.15 for s in scores)
+            if celda.size == 0:
+                intensidades.append(0)
+                continue
 
-            if max_score < 0.10:
-                respuestas[str(i+1)] = "BLANCO"
-            elif marcadas > 1:
-                respuestas[str(i+1)] = "DOBLE"
-            else:
-                idx = int(np.argmax(scores))
-                respuestas[str(i+1)] = opciones[idx]
+            # % de píxeles negros (mejor que media)
+            negro = (np.sum(celda) / celda.size) * 100
+            intensidades.append(negro)
 
-        return jsonify({
-            "ok": True,
-            "respuestas": respuestas
-        })
+        marcadas = sum(v > 20 for v in intensidades)  # umbral más realista
 
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+        if marcadas == 0:
+            respuestas[str(i+1)] = "BLANCO"
+        elif marcadas > 1:
+            respuestas[str(i+1)] = "DOBLE"
+        else:
+            idx = np.argmax(intensidades)
+            respuestas[str(i+1)] = opciones[idx]
 
+    return jsonify({
+        "ok": True,
+        "respuestas": respuestas
+    })
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=8080)
