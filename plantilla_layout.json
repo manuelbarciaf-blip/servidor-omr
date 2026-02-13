@@ -1,121 +1,26 @@
-#include <opencv2/opencv.hpp>
-#include <nlohmann/json.hpp>
-#include <fstream>
-#include <map>
-#include <string>
-#include <vector>
-
-using namespace cv;
-using json = nlohmann::json;
-using namespace std;
-
-double porcentajeNegro(const Mat &celda) {
-    Mat gray, bin;
-    cvtColor(celda, gray, COLOR_BGR2GRAY);
-    adaptiveThreshold(gray, bin, 255, ADAPTIVE_THRESH_MEAN_C, THRESH_BINARY_INV, 21, 10);
-    double negros = countNonZero(bin);
-    double total = bin.rows * bin.cols;
-    return (total > 0) ? (negros / total) * 100.0 : 0.0;
-}
-
-string clasificar(const vector<double> &v) {
-    // v[0]=A, v[1]=B, v[2]=C, v[3]=D
-    double umbralMarcado = 25.0;
-    int countMarcadas = 0;
-    int idxMax = -1;
-    double maxVal = -1;
-
-    for (int i = 0; i < 4; ++i) {
-        if (v[i] > umbralMarcado) {
-            countMarcadas++;
-        }
-        if (v[i] > maxVal) {
-            maxVal = v[i];
-            idxMax = i;
-        }
+{
+  "num_preguntas": 20,
+  "opciones": ["A", "B", "C", "D"],
+  "layout": {
+    "zona_respuestas": {
+      "x0_rel": 0.15,
+      "y0_rel": 0.25,
+      "ancho_rel": 0.70,
+      "alto_rel": 0.60
+    },
+    "columnas": {
+      "A": { "offset_x_rel": 0.05 },
+      "B": { "offset_x_rel": 0.25 },
+      "C": { "offset_x_rel": 0.45 },
+      "D": { "offset_x_rel": 0.65 }
+    },
+    "filas": {
+      "offset_y_rel": 0.045,
+      "alto_celda_rel": 0.03
+    },
+    "casilla": {
+      "ancho_rel": 0.06,
+      "alto_rel": 0.03
     }
-
-    if (countMarcadas == 0) return "BLANCO";
-    if (countMarcadas > 1) return "DOBLE";
-
-    const char *opciones = "ABCD";
-    return string(1, opciones[idxMax]);
-}
-
-int main() {
-    // Cargar imagen ya corregida de perspectiva y normalizada
-    Mat img = imread("hoja_normalizada.jpg");
-    if (img.empty()) return -1;
-
-    int ANCHO = img.cols;
-    int ALTO  = img.rows;
-
-    // Cargar plantilla_layout.json
-    ifstream f("plantilla_layout.json");
-    json layoutJson;
-    f >> layoutJson;
-
-    auto layout = layoutJson["layout"];
-
-    double x0_rel    = layout["zona_respuestas"]["x0_rel"];
-    double y0_rel    = layout["zona_respuestas"]["y0_rel"];
-    double ancho_rel = layout["zona_respuestas"]["ancho_rel"];
-    double alto_rel  = layout["zona_respuestas"]["alto_rel"];
-
-    int x0    = int(x0_rel * ANCHO);
-    int y0    = int(y0_rel * ALTO);
-    int ancho = int(ancho_rel * ANCHO);
-    int alto  = int(alto_rel * ALTO);
-
-    Rect zona(x0, y0, ancho, alto);
-    Mat respuestas = img(zona);
-
-    double offset_y_rel    = layout["filas"]["offset_y_rel"];
-    double alto_celda_rel  = layout["filas"]["alto_celda_rel"];
-    double ancho_celda_rel = layout["casilla"]["ancho_rel"];
-    double alto_celda_rel2 = layout["casilla"]["alto_rel"]; // puedes usar este o el de filas
-
-    int num_preguntas = layoutJson["num_preguntas"];
-
-    vector<string> opciones = layoutJson["opciones"];
-
-    map<string,double> colOffsetRel;
-    for (auto &col : layout["columnas"].items()) {
-        string letra = col.key(); // "A","B","C","D"
-        double off   = col.value()["offset_x_rel"];
-        colOffsetRel[letra] = off;
-    }
-
-    map<int,string> resultado;
-
-    for (int i = 0; i < num_preguntas; ++i) {
-        double fila_y_rel = i * offset_y_rel;
-        int fila_y = int(fila_y_rel * alto);
-
-        vector<double> intensidades(4);
-
-        for (int j = 0; j < 4; ++j) {
-            string letra = opciones[j]; // "A","B","C","D"
-            double col_rel = colOffsetRel[letra];
-
-            int col_x = int(col_rel * ancho);
-            int w = int(ancho_celda_rel * ancho);
-            int h = int(alto_celda_rel * alto);
-
-            Rect roi(col_x, fila_y, w, h);
-            if (roi.x < 0 || roi.y < 0 || roi.x + roi.width > respuestas.cols || roi.y + roi.height > respuestas.rows)
-                continue;
-
-            Mat celda = respuestas(roi);
-            double negro = porcentajeNegro(celda);
-            intensidades[j] = negro;
-        }
-
-        string res = clasificar(intensidades);
-        resultado[i+1] = res;
-    }
-
-    // Aquí ya tienes resultado[1..20] con "A/B/C/D/BLANCO/DOBLE"
-    // Lo que devuelvas por API es lo que luego lee tu PHP.
-    return 0;
+  }
 }
