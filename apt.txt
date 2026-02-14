@@ -1,0 +1,2 @@
+libzbar0 
+Añadir apt.txt con libzbar0
