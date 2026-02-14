@@ -1,4 +1,4 @@
-# reconstrucción
+# reconstrucción 2
 from flask import Flask, request, jsonify
 from PIL import Image, ImageOps
 import numpy as np
