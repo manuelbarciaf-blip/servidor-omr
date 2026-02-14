@@ -1,4 +1,0 @@
-flask
-pillow
-numpy
-pyzbar==0.1.9
