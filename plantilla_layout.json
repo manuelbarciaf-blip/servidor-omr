@@ -1,26 +1,25 @@
 {
-  "num_preguntas": 20,
   "opciones": ["A", "B", "C", "D"],
   "layout": {
     "zona_respuestas": {
-      "x0_rel": 0.15,
-      "y0_rel": 0.25,
-      "ancho_rel": 0.70,
-      "alto_rel": 0.60
+      "x0_rel": 0.12,
+      "y0_rel": 0.20,
+      "ancho_rel": 0.75,
+      "alto_rel": 0.70
     },
     "columnas": {
       "A": { "offset_x_rel": 0.05 },
-      "B": { "offset_x_rel": 0.25 },
-      "C": { "offset_x_rel": 0.45 },
-      "D": { "offset_x_rel": 0.65 }
+      "B": { "offset_x_rel": 0.27 },
+      "C": { "offset_x_rel": 0.49 },
+      "D": { "offset_x_rel": 0.71 }
     },
     "filas": {
-      "offset_y_rel": 0.045,
-      "alto_celda_rel": 0.03
+      "offset_y_rel": 0.0125,
+      "alto_celda_rel": 0.028
     },
     "casilla": {
       "ancho_rel": 0.06,
-      "alto_rel": 0.03
+      "alto_rel": 0.028
     }
   }
 }
