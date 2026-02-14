@@ -4,11 +4,40 @@ import numpy as np
 import json
 import io
 
+# 🔥 NUEVO: lector de código de barras
+from pyzbar.pyzbar import decode
+
 app = Flask(__name__)
 
 # Cargar layout
 with open("plantilla_layout.json", "r") as f:
     layout = json.load(f)
+
+def leer_codigo_barras(img):
+    """
+    Recorta la zona superior derecha donde está el código
+    y usa pyzbar para leer CODE128.
+    """
+
+    W, H = img.size
+
+    # Zona del código (ajustada a tu plantilla)
+    crop_w = int(W * 0.40)
+    crop_h = int(H * 0.15)
+    crop_x = W - crop_w - 20
+    crop_y = 20
+
+    zona = img.crop((crop_x, crop_y, crop_x + crop_w, crop_y + crop_h))
+
+    # Intentar leer código
+    barcodes = decode(zona)
+
+    if not barcodes:
+        return None
+
+    # Tomar el primero
+    return barcodes[0].data.decode("utf-8")
+
 
 @app.route("/omr/leer", methods=["POST"])
 def leer_omr():
@@ -27,23 +56,25 @@ def leer_omr():
 
     # 🔥 TAMAÑO REALISTA (A4 escaneado / móvil)
     ANCHO = 1000
-    ALTO = 1400  # <-- CORREGIDO (antes tenías 1401400)
+    ALTO = 1400
 
     img = img.resize((ANCHO, ALTO))
     img_np = np.array(img)
 
-    # Mejor umbral para fotos móviles (más tolerante)
-    thresh = img_np < 160  # antes 180 (demasiado agresivo)
+    # 🔥 LEER CÓDIGO DE BARRAS
+    codigo = leer_codigo_barras(img)
+
+    # Mejor umbral para fotos móviles
+    thresh = img_np < 160
 
     lay = layout["layout"]
 
-    # Zona de respuestas (relativa)
+    # Zona de respuestas
     x0 = int(lay["zona_respuestas"]["x0_rel"] * ANCHO)
     y0 = int(lay["zona_respuestas"]["y0_rel"] * ALTO)
     ancho = int(lay["zona_respuestas"]["ancho_rel"] * ANCHO)
     alto = int(lay["zona_respuestas"]["alto_rel"] * ALTO)
 
-    # Protección contra recortes fuera de rango (fotos torcidas)
     x1 = min(x0 + ancho, ANCHO)
     y1 = min(y0 + alto, ALTO)
 
@@ -68,7 +99,6 @@ def leer_omr():
     for i in range(num_preguntas):
         fila_y = int(i * offset_y * alto)
 
-        # Evitar overflow si la foto está desplazada
         if fila_y + 5 >= zona.shape[0]:
             respuestas[str(i+1)] = "BLANCO"
             continue
@@ -80,7 +110,6 @@ def leer_omr():
             w = int(ancho_celda * ancho)
             h = int(alto_celda * alto)
 
-            # Protección de límites (crucial en fotos móviles)
             x_end = min(col_x + w, zona.shape[1])
             y_end = min(fila_y + h, zona.shape[0])
 
@@ -90,11 +119,10 @@ def leer_omr():
                 intensidades.append(0)
                 continue
 
-            # % de píxeles negros (mejor que media)
             negro = (np.sum(celda) / celda.size) * 100
             intensidades.append(negro)
 
-        marcadas = sum(v > 20 for v in intensidades)  # umbral más realista
+        marcadas = sum(v > 20 for v in intensidades)
 
         if marcadas == 0:
             respuestas[str(i+1)] = "BLANCO"
@@ -106,8 +134,10 @@ def leer_omr():
 
     return jsonify({
         "ok": True,
+        "codigo": codigo,   # 🔥 AHORA SÍ DEVUELVE EL CÓDIGO
         "respuestas": respuestas
     })
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
