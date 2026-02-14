@@ -1,4 +1,4 @@
 flask
 pillow
 numpy
-pyzbar
+pyzbar==0.1.9
