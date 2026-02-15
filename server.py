@@ -118,6 +118,79 @@ def ver_plantilla_sobre():
 
 
 # ---------------------------------------------------------
+# 4. PANEL HTML INTERACTIVO
+# ---------------------------------------------------------
+@app.route("/omr/panel")
+def panel_html():
+    return """
+<!DOCTYPE html>
+<html lang='es'>
+<head>
+<meta charset='UTF-8'>
+<title>Panel OMR</title>
+<style>
+body { font-family: Arial; margin: 20px; }
+h2 { margin-bottom: 10px; }
+#preview { max-width: 100%; border: 1px solid #ccc; margin-top: 20px; }
+.container { display: flex; gap: 40px; }
+.block { width: 45%; }
+input[type=file] { margin-top: 10px; }
+button { padding: 10px 20px; margin-top: 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<h2>🧩 Panel visual OMR</h2>
+
+<div class="container">
+
+    <div class="block">
+        <h3>Ver plantilla sobre fondo blanco</h3>
+        <button onclick="verPlantilla()">Mostrar plantilla</button>
+    </div>
+
+    <div class="block">
+        <h3>Ver plantilla sobre una imagen real</h3>
+        <input type="file" id="imagen" accept="image/*">
+        <button onclick="subirImagen()">Subir y ver</button>
+    </div>
+
+</div>
+
+<img id="preview" src="" alt="Vista previa">
+
+<script>
+function verPlantilla() {
+    document.getElementById("preview").src = "/omr/ver_plantilla?" + Date.now();
+}
+
+function subirImagen() {
+    let file = document.getElementById("imagen").files[0];
+    if (!file) {
+        alert("Selecciona una imagen primero");
+        return;
+    }
+
+    let formData = new FormData();
+    formData.append("file", file);
+
+    fetch("/omr/ver_plantilla_sobre", {
+        method: "POST",
+        body: formData
+    })
+    .then(r => r.blob())
+    .then(blob => {
+        document.getElementById("preview").src = URL.createObjectURL(blob);
+    });
+}
+</script>
+
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------
 # ARRANQUE DEL SERVIDOR
 # ---------------------------------------------------------
 if __name__ == "__main__":
