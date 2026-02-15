@@ -60,3 +60,43 @@ def leer_omr():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
+from flask import send_file
+from PIL import ImageDraw
+
+@app.route("/omr/ver_plantilla")
+def ver_plantilla():
+    # Cargar plantilla
+    with open("plantilla_layout.json", "r") as f:
+        plantilla = json.load(f)
+
+    # Crear imagen base (blanca)
+    img = Image.new("RGB", (1200, 1600), "white")
+    draw = ImageDraw.Draw(img)
+
+    # Colores por opción
+    colores = {
+        "A": "red",
+        "B": "blue",
+        "C": "green",
+        "D": "orange"
+    }
+
+    # Dibujar cada pregunta
+    for pregunta in plantilla["preguntas"]:
+        num = pregunta["numero"]
+
+        for op in pregunta["opciones"]:
+            letra = op["letra"]
+            x1, y1, x2, y2 = op["bbox"]
+
+            # Dibujar rectángulo
+            draw.rectangle([x1, y1, x2, y2], outline=colores[letra], width=3)
+
+            # Etiqueta
+            draw.text((x1, y1 - 12), f"{num}{letra}", fill=colores[letra])
+
+    # Guardar temporalmente
+    ruta = "plantilla_preview.png"
+    img.save(ruta)
+
+    return send_file(ruta, mimetype="image/png")
