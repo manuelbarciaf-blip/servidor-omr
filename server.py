@@ -1,5 +1,5 @@
-from flask import Flask, request, jsonify
-from PIL import Image
+from flask import Flask, request, jsonify, send_file
+from PIL import Image, ImageDraw
 from pyzbar.pyzbar import decode
 import numpy as np
 import os
@@ -11,6 +11,9 @@ app = Flask(__name__)
 with open("plantilla_layout.json", "r") as f:
     layout = json.load(f)
 
+# ---------------------------------------------------------
+# 1. ENDPOINT PRINCIPAL: LECTURA OMR
+# ---------------------------------------------------------
 @app.route("/omr/leer", methods=["POST"])
 def leer_omr():
     if "file" not in request.files:
@@ -57,50 +60,37 @@ def leer_omr():
         "num_preguntas": len(respuestas)
     })
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-from flask import send_file
-from PIL import ImageDraw
 
+# ---------------------------------------------------------
+# 2. PANEL: VER PLANTILLA SOBRE FONDO BLANCO
+# ---------------------------------------------------------
 @app.route("/omr/ver_plantilla")
 def ver_plantilla():
-    # Cargar plantilla
     with open("plantilla_layout.json", "r") as f:
         plantilla = json.load(f)
 
-    # Crear imagen base (blanca)
     img = Image.new("RGB", (1200, 1600), "white")
     draw = ImageDraw.Draw(img)
 
-    # Colores por opción
-    colores = {
-        "A": "red",
-        "B": "blue",
-        "C": "green",
-        "D": "orange"
-    }
+    colores = {"A": "red", "B": "blue", "C": "green", "D": "orange"}
 
-    # Dibujar cada pregunta
     for pregunta in plantilla["preguntas"]:
         num = pregunta["numero"]
-
         for op in pregunta["opciones"]:
             letra = op["letra"]
             x1, y1, x2, y2 = op["bbox"]
-
-            # Dibujar rectángulo
             draw.rectangle([x1, y1, x2, y2], outline=colores[letra], width=3)
-
-            # Etiqueta
             draw.text((x1, y1 - 12), f"{num}{letra}", fill=colores[letra])
 
-    # Guardar temporalmente
     ruta = "plantilla_preview.png"
     img.save(ruta)
-
     return send_file(ruta, mimetype="image/png")
-    @app.route("/omr/ver_plantilla_sobre", methods=["POST"])
+
+
+# ---------------------------------------------------------
+# 3. PANEL: VER PLANTILLA SOBRE UNA IMAGEN REAL
+# ---------------------------------------------------------
+@app.route("/omr/ver_plantilla_sobre", methods=["POST"])
 def ver_plantilla_sobre():
     if "file" not in request.files:
         return "Falta archivo", 400
@@ -112,12 +102,7 @@ def ver_plantilla_sobre():
     with open("plantilla_layout.json", "r") as f:
         plantilla = json.load(f)
 
-    colores = {
-        "A": "red",
-        "B": "blue",
-        "C": "green",
-        "D": "orange"
-    }
+    colores = {"A": "red", "B": "blue", "C": "green", "D": "orange"}
 
     for pregunta in plantilla["preguntas"]:
         num = pregunta["numero"]
@@ -129,6 +114,12 @@ def ver_plantilla_sobre():
 
     ruta = "plantilla_sobre.png"
     img.save(ruta)
-
     return send_file(ruta, mimetype="image/png")
 
+
+# ---------------------------------------------------------
+# ARRANQUE DEL SERVIDOR
+# ---------------------------------------------------------
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
