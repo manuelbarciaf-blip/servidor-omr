@@ -1,199 +1,136 @@
-# Redeploy trigger
-from flask import Flask, request, jsonify, send_file
-from PIL import Image, ImageDraw
-from pyzbar.pyzbar import decode
+import cv2
 import numpy as np
-import os
 import json
+import sys
+from pyzbar.pyzbar import decode
+import re
 
-app = Flask(__name__)
+def leer_barcode(img):
+    # Buscar en la franja superior (más robusto)
+    h = img.shape[0]
+    zona = img[0:int(h*0.35), :]
+    
+    gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
+    
+    # Mejorar contraste (clave para móviles)
+    gray = cv2.equalizeHist(gray)
+    
+    barcodes = decode(gray)
+    
+    for barcode in barcodes:
+        texto = barcode.data.decode("utf-8")
+        return texto
+    
+    return None
 
-# Cargar plantilla layout
-with open("plantilla_layout.json", "r") as f:
-    layout = json.load(f)
-
-# ---------------------------------------------------------
-# 1. ENDPOINT PRINCIPAL: LECTURA OMR
-# ---------------------------------------------------------
-@app.route("/omr/leer", methods=["POST"])
-def leer_omr():
-    if "file" not in request.files:
-        return jsonify({"error": "No se envió archivo"}), 400
-
-    file = request.files["file"]
-    img = Image.open(file.stream).convert("RGB")
-
-    # ------------------------------
-    # 1. Leer código de barras
-    # ------------------------------
-    codigos = decode(img)
-    if codigos:
-        codigo = codigos[0].data.decode("utf-8")
-    else:
-        codigo = "DESCONOCIDO"
-
-    # ------------------------------
-    # 2. Leer burbujas OMR
-    # ------------------------------
-    respuestas = {}
-    for pregunta in layout["preguntas"]:
-        num = pregunta["numero"]
-        opciones = pregunta["opciones"]
-
-        mejor_opcion = "BLANCO"
-        mejor_nivel = 0
-
-        for op in opciones:
-            x1, y1, x2, y2 = op["bbox"]
-            recorte = img.crop((x1, y1, x2, y2))
-            arr = np.array(recorte.convert("L"))
-            nivel = 255 - arr.mean()
-
-            if nivel > mejor_nivel and nivel > layout["umbral"]:
-                mejor_nivel = nivel
-                mejor_opcion = op["letra"]
-
-        respuestas[num] = mejor_opcion
-
-    return jsonify({
-        "codigo": codigo,
-        "respuestas": respuestas,
-        "num_preguntas": len(respuestas)
-    })
-
-
-# ---------------------------------------------------------
-# 2. PANEL: VER PLANTILLA SOBRE FONDO BLANCO
-# ---------------------------------------------------------
-@app.route("/omr/ver_plantilla")
-def ver_plantilla():
-    with open("plantilla_layout.json", "r") as f:
-        plantilla = json.load(f)
-
-    img = Image.new("RGB", (1200, 1600), "white")
-    draw = ImageDraw.Draw(img)
-
-    colores = {"A": "red", "B": "blue", "C": "green", "D": "orange"}
-
-    for pregunta in plantilla["preguntas"]:
-        num = pregunta["numero"]
-        for op in pregunta["opciones"]:
-            letra = op["letra"]
-            x1, y1, x2, y2 = op["bbox"]
-            draw.rectangle([x1, y1, x2, y2], outline=colores[letra], width=3)
-            draw.text((x1, y1 - 12), f"{num}{letra}", fill=colores[letra])
-
-    ruta = "plantilla_preview.png"
-    img.save(ruta)
-    return send_file(ruta, mimetype="image/png")
-
-
-# ---------------------------------------------------------
-# 3. PANEL: VER PLANTILLA SOBRE UNA IMAGEN REAL
-# ---------------------------------------------------------
-@app.route("/omr/ver_plantilla_sobre", methods=["POST"])
-def ver_plantilla_sobre():
-    if "file" not in request.files:
-        return "Falta archivo", 400
-
-    file = request.files["file"]
-    img = Image.open(file.stream).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    with open("plantilla_layout.json", "r") as f:
-        plantilla = json.load(f)
-
-    colores = {"A": "red", "B": "blue", "C": "green", "D": "orange"}
-
-    for pregunta in plantilla["preguntas"]:
-        num = pregunta["numero"]
-        for op in pregunta["opciones"]:
-            letra = op["letra"]
-            x1, y1, x2, y2 = op["bbox"]
-            draw.rectangle([x1, y1, x2, y2], outline=colores[letra], width=3)
-            draw.text((x1, y1 - 12), f"{num}{letra}", fill=colores[letra])
-
-    ruta = "plantilla_sobre.png"
-    img.save(ruta)
-    return send_file(ruta, mimetype="image/png")
-
-
-# ---------------------------------------------------------
-# 4. PANEL HTML INTERACTIVO
-# ---------------------------------------------------------
-@app.route("/omr/panel")
-def panel_html():
-    return """
-<!DOCTYPE html>
-<html lang='es'>
-<head>
-<meta charset='UTF-8'>
-<title>Panel OMR</title>
-<style>
-body { font-family: Arial; margin: 20px; }
-h2 { margin-bottom: 10px; }
-#preview { max-width: 100%; border: 1px solid #ccc; margin-top: 20px; }
-.container { display: flex; gap: 40px; }
-.block { width: 45%; }
-input[type=file] { margin-top: 10px; }
-button { padding: 10px 20px; margin-top: 10px; cursor: pointer; }
-</style>
-</head>
-<body>
-
-<h2>🧩 Panel visual OMR</h2>
-
-<div class="container">
-
-    <div class="block">
-        <h3>Ver plantilla sobre fondo blanco</h3>
-        <button onclick="verPlantilla()">Mostrar plantilla</button>
-    </div>
-
-    <div class="block">
-        <h3>Ver plantilla sobre una imagen real</h3>
-        <input type="file" id="imagen" accept="image/*">
-        <button onclick="subirImagen()">Subir y ver</button>
-    </div>
-
-</div>
-
-<img id="preview" src="" alt="Vista previa">
-
-<script>
-function verPlantilla() {
-    document.getElementById("preview").src = "/omr/ver_plantilla?" + Date.now();
-}
-
-function subirImagen() {
-    let file = document.getElementById("imagen").files[0];
-    if (!file) {
-        alert("Selecciona una imagen primero");
-        return;
+def parsear_codigo(codigo):
+    examen = re.search(r'EXAM(\d+)', codigo)
+    alumno = re.search(r'ALU(\d+)', codigo)
+    fecha = re.search(r'FECHA(\d+)', codigo)
+    
+    return {
+        "id_examen": examen.group(1) if examen else None,
+        "id_alumno": alumno.group(1) if alumno else None,
+        "fecha": fecha.group(1) if fecha else None
     }
 
-    let formData = new FormData();
-    formData.append("file", file);
+def detectar_esquinas(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
+    
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    cuadrados = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if 1000 < area < 10000:
+            x,y,w,h = cv2.boundingRect(c)
+            if abs(w-h) < 20:
+                cuadrados.append((x,y,w,h))
+    
+    return cuadrados
 
-    fetch("/omr/ver_plantilla_sobre", {
-        method: "POST",
-        body: formData
-    })
-    .then(r => r.blob())
-    .then(blob => {
-        document.getElementById("preview").src = URL.createObjectURL(blob);
-    });
-}
-</script>
+def detectar_respuestas(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5,5), 0)
+    
+    _, thresh = cv2.threshold(blur, 140, 255, cv2.THRESH_BINARY_INV)
+    
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    burbujas = []
+    
+    for c in contours:
+        area = cv2.contourArea(c)
+        if 300 < area < 2000:
+            (x, y, w, h) = cv2.boundingRect(c)
+            ratio = w / float(h)
+            
+            if 0.7 < ratio < 1.3:
+                burbujas.append((x,y,w,h))
+    
+    burbujas = sorted(burbujas, key=lambda b: (b[1], b[0]))
+    
+    respuestas = []
+    opciones = ['A','B','C','D']
+    
+    for i in range(0, len(burbujas), 4):
+        grupo = burbujas[i:i+4]
+        if len(grupo) < 4:
+            continue
+        
+        grupo = sorted(grupo, key=lambda g: g[0])
+        
+        valores = []
+        for (x,y,w,h) in grupo:
+            roi = thresh[y:y+h, x:x+w]
+            total = cv2.countNonZero(roi)
+            valores.append(total)
+        
+        indice = np.argmax(valores)
+        respuestas.append(opciones[indice])
+    
+    return respuestas
 
-</body>
-</html>
-"""
+def dibujar_correccion(img, respuestas):
+    salida = img.copy()
+    
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    y = 200
+    
+    for i, r in enumerate(respuestas):
+        cv2.putText(salida, f"{i+1}:{r}", (50, y), font, 0.6, (0,0,255), 2)
+        y += 25
+    
+    return salida
 
-
-# ---------------------------------------------------------
-# ARRANQUE DEL SERVIDOR
-# ---------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    ruta = sys.argv[1]
+    
+    img = cv2.imread(ruta)
+    
+    # 1 Leer barcode (OBLIGATORIO)
+    codigo = leer_barcode(img)
+    
+    if codigo:
+        datos = parsear_codigo(codigo)
+    else:
+        datos = {"id_examen": None, "id_alumno": None, "fecha": None}
+    
+    # 2 Detectar respuestas reales (no fijo a 20)
+    respuestas = detectar_respuestas(img)
+    
+    # 3 Imagen corregida
+    corregida = dibujar_correccion(img, respuestas)
+    ruta_corregida = ruta.replace(".jpg", "_corregido.jpg")
+    cv2.imwrite(ruta_corregida, corregida)
+    
+    resultado = {
+        "barcode": codigo,
+        "datos": datos,
+        "num_preguntas_detectadas": len(respuestas),
+        "respuestas": respuestas,
+        "imagen_corregida": ruta_corregida
+    }
+    
+    print(json.dumps(resultado))
