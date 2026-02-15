@@ -1,33 +1,26 @@
 {
-  "umbral": 40,
-  "preguntas": [
-    {
-      "numero": 1,
-      "opciones": [
-        { "letra": "A", "bbox": [189, 320, 261, 365] },
-        { "letra": "B", "bbox": [405, 320, 477, 365] },
-        { "letra": "C", "bbox": [621, 320, 693, 365] },
-        { "letra": "D", "bbox": [837, 320, 909, 365] }
-      ]
+  "num_preguntas": 60,
+  "opciones": ["A", "B", "C", "D"],
+  "layout": {
+    "zona_respuestas": {
+      "x0_rel": 0.12,
+      "y0_rel": 0.22,
+      "ancho_rel": 0.76,
+      "alto_rel": 0.68
     },
-    {
-      "numero": 2,
-      "opciones": [
-        { "letra": "A", "bbox": [189, 340, 261, 385] },
-        { "letra": "B", "bbox": [405, 340, 477, 385] },
-        { "letra": "C", "bbox": [621, 340, 693, 385] },
-        { "letra": "D", "bbox": [837, 340, 909, 385] }
-      ]
+    "columnas": {
+      "A": { "offset_x_rel": 0.08 },
+      "B": { "offset_x_rel": 0.32 },
+      "C": { "offset_x_rel": 0.56 },
+      "D": { "offset_x_rel": 0.80 }
     },
-    {
-      "numero": 3,
-      "opciones": [
-        { "letra": "A", "bbox": [189, 360, 261, 405] },
-        { "letra": "B", "bbox": [405, 360, 477, 405] },
-        { "letra": "C", "bbox": [621, 360, 693, 405] },
-        { "letra": "D", "bbox": [837, 360, 909, 405] }
-      ]
+    "filas": {
+      "offset_y_rel": 0.032,
+      "alto_celda_rel": 0.028
+    },
+    "casilla": {
+      "ancho_rel": 0.08,
+      "alto_rel": 0.04
     }
-    /* … AQUÍ VAN TODAS LAS PREGUNTAS HASTA LA 30 … */
-  ]
+  }
 }
