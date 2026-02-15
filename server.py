@@ -1,3 +1,4 @@
+# 
 from flask import Flask, request, jsonify, send_file
 from PIL import Image, ImageDraw
 from pyzbar.pyzbar import decode
