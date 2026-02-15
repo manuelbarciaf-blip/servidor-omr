@@ -1,17 +1,21 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
+# Instalar dependencias del sistema necesarias para OpenCV y pyzbar
 RUN apt-get update && apt-get install -y \
     libzbar0 \
-    libzbar-dev \
-    && apt-get clean
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Copiar archivos
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 8080
+# Puerto que usa Render
+ENV PORT=8080
 
-CMD ["python", "server.py"]
+# Ejecutar con gunicorn (mejor que flask run)
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "server:app"]
