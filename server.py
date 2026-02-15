@@ -100,3 +100,35 @@ def ver_plantilla():
     img.save(ruta)
 
     return send_file(ruta, mimetype="image/png")
+    @app.route("/omr/ver_plantilla_sobre", methods=["POST"])
+def ver_plantilla_sobre():
+    if "file" not in request.files:
+        return "Falta archivo", 400
+
+    file = request.files["file"]
+    img = Image.open(file.stream).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    with open("plantilla_layout.json", "r") as f:
+        plantilla = json.load(f)
+
+    colores = {
+        "A": "red",
+        "B": "blue",
+        "C": "green",
+        "D": "orange"
+    }
+
+    for pregunta in plantilla["preguntas"]:
+        num = pregunta["numero"]
+        for op in pregunta["opciones"]:
+            letra = op["letra"]
+            x1, y1, x2, y2 = op["bbox"]
+            draw.rectangle([x1, y1, x2, y2], outline=colores[letra], width=3)
+            draw.text((x1, y1 - 12), f"{num}{letra}", fill=colores[letra])
+
+    ruta = "plantilla_sobre.png"
+    img.save(ruta)
+
+    return send_file(ruta, mimetype="image/png")
+
