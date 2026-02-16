@@ -5,104 +5,142 @@ import sys
 from flask import Flask, request, jsonify
 from pyzbar.pyzbar import decode
 import os
+import tempfile
 
 app = Flask(__name__)
 
 # =========================
-# LECTOR DE BARCODE (CODE128)
+# LECTOR DE BARCODE (MEJORADO)
 # =========================
 def leer_barcode(img):
     try:
-        barcodes = decode(img)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        barcodes = decode(gray)
+
         for barcode in barcodes:
             codigo = barcode.data.decode("utf-8")
-            if codigo:
+            if "EXAM" in codigo:
                 return codigo
         return None
-    except Exception as e:
+    except:
         return None
 
 # =========================
-# PARSEAR CODIGO
-# EJEMPLO: EXAM007ALU030FECHA09022026
+# PARSEAR CODIGO REAL
+# EXAM007ALU030FECHA09022026
 # =========================
 def parsear_codigo(codigo):
+    datos = {
+        "id_examen": None,
+        "id_alumno": None,
+        "fecha": None
+    }
+
+    if not codigo:
+        return datos
+
     try:
-        return {
-            "id_examen": codigo[0:7],
-            "id_alumno": codigo[7:13],
-            "fecha": codigo[13:]
-        }
+        if "EXAM" in codigo and "ALU" in codigo:
+            datos["id_examen"] = int(codigo.split("EXAM")[1].split("ALU")[0])
+            datos["id_alumno"] = int(codigo.split("ALU")[1].split("FECHA")[0])
+
+        if "FECHA" in codigo:
+            datos["fecha"] = codigo.split("FECHA")[1]
+
     except:
-        return {
-            "id_examen": None,
-            "id_alumno": None,
-            "fecha": None
-        }
+        pass
+
+    return datos
 
 # =========================
-# DETECTAR RESPUESTAS OMR
-# (adaptado a 1, 2 o 3 columnas y 4 opciones A B C D)
+# DETECTOR OMR PROFESIONAL (PLANTILLA FIJA)
 # =========================
 def detectar_respuestas(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
-    _, thresh = cv2.threshold(blur, 150, 255, cv2.THRESH_BINARY_INV)
+    h, w = img.shape[:2]
 
-    contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # ZONA CENTRAL donde SIEMPRE están tus burbujas (según tus imágenes)
+    zona = img[int(h*0.30):int(h*0.85), int(w*0.15):int(w*0.85)]
+
+    gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5,5), 0)
+
+    thresh = cv2.threshold(
+        blur, 0, 255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )[1]
+
+    # Buscar burbujas
+    contornos, _ = cv2.findContours(
+        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
     burbujas = []
     for c in contornos:
         area = cv2.contourArea(c)
-        if 150 < area < 2000:  # rango burbujas
-            x,y,w,h = cv2.boundingRect(c)
-            ratio = w/float(h)
-            if 0.7 < ratio < 1.3:
-                burbujas.append((x,y,w,h))
 
+        # Ajustado a tus burbujas reales (centrales y rellenas)
+        if 300 < area < 3000:
+            x, y, bw, bh = cv2.boundingRect(c)
+            ratio = bw / float(bh)
+
+            # Filtrar solo círculos (burbujas)
+            if 0.6 < ratio < 1.4:
+                burbujas.append((x, y, bw, bh))
+
+    # Ordenar por filas (clave para 30 preguntas en 2 líneas)
     burbujas = sorted(burbujas, key=lambda b: (b[1], b[0]))
 
     respuestas = []
     opciones = ['A','B','C','D']
 
-    fila = []
+    filas = []
+    fila_actual = []
     last_y = None
 
+    # Agrupar por filas reales (tus 2 líneas de 15)
     for b in burbujas:
-        x,y,w,h = b
+        x, y, bw, bh = b
 
         if last_y is None:
             last_y = y
 
-        # Nueva fila si cambia mucho la Y
-        if abs(y - last_y) > 20:
-            if len(fila) == 4:
-                respuestas.append(evaluar_fila(img, fila, opciones))
-            fila = []
+        if abs(y - last_y) > 25:
+            if fila_actual:
+                filas.append(sorted(fila_actual, key=lambda k: k[0]))
+            fila_actual = [b]
             last_y = y
+        else:
+            fila_actual.append(b)
 
-        fila.append(b)
+    if fila_actual:
+        filas.append(sorted(fila_actual, key=lambda k: k[0]))
 
-        if len(fila) == 4:
-            respuestas.append(evaluar_fila(img, fila, opciones))
-            fila = []
+    # Cada pregunta = grupo de 4 burbujas (A B C D)
+    for fila in filas:
+        for i in range(0, len(fila), 4):
+            grupo = fila[i:i+4]
+            if len(grupo) < 4:
+                continue
+
+            rellenos = []
+            for (x, y, bw, bh) in grupo:
+                roi = thresh[y:y+bh, x:x+bw]
+                pixeles = cv2.countNonZero(roi)
+                rellenos.append(pixeles)
+
+            max_idx = np.argmax(rellenos)
+            max_val = rellenos[max_idx]
+
+            # Umbral para detectar si está marcada
+            if max_val < 150:
+                respuestas.append("BLANCO")
+            else:
+                respuestas.append(opciones[max_idx])
 
     return respuestas
 
-
-def evaluar_fila(img, fila, opciones):
-    intensidades = []
-    for (x,y,w,h) in fila:
-        roi = img[y:y+h, x:x+w]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        mean = cv2.mean(gray)[0]
-        intensidades.append(mean)
-
-    idx = np.argmin(intensidades)  # la más oscura = marcada
-    return opciones[idx]
-
 # =========================
-# DIBUJAR CORRECCIÓN
+# DIBUJAR CORRECCIÓN VISUAL
 # =========================
 def dibujar_correccion(img, respuestas):
     salida = img.copy()
@@ -110,13 +148,21 @@ def dibujar_correccion(img, respuestas):
     font = cv2.FONT_HERSHEY_SIMPLEX
 
     for i, r in enumerate(respuestas):
-        cv2.putText(salida, f"{i+1}:{r}", (50, y), font, 0.6, (0,0,255), 2)
+        cv2.putText(
+            salida,
+            f"{i+1}:{r}",
+            (50, y),
+            font,
+            0.6,
+            (0, 0, 255),
+            2
+        )
         y += 25
-    
+
     return salida
 
 # =========================
-# ENDPOINT API PARA PHP
+# ENDPOINT PARA TU PHP (/omr/leer)
 # =========================
 @app.route("/omr/leer", methods=["POST"])
 def omr_leer():
@@ -124,31 +170,29 @@ def omr_leer():
         return jsonify({"ok": False, "error": "No se envió archivo"})
 
     file = request.files['file']
-    ruta_temp = "temp.jpg"
-    file.save(ruta_temp)
 
-    img = cv2.imread(ruta_temp)
+    # Archivo temporal (importante en Render)
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
+    file.save(temp.name)
+
+    img = cv2.imread(temp.name)
 
     if img is None:
         return jsonify({"ok": False, "error": "Imagen inválida"})
 
-    # 1 Leer código de barras
+    # 1️⃣ Leer código de barras (PRIORIDAD MÁXIMA)
     codigo = leer_barcode(img)
+    datos = parsear_codigo(codigo)
 
-    if codigo:
-        datos = parsear_codigo(codigo)
-    else:
-        datos = {"id_examen": None, "id_alumno": None, "fecha": None}
-
-    # 2 Detectar respuestas (20,30,40,60 automáticamente)
+    # 2️⃣ Detectar respuestas REALES (no fijo a 20)
     respuestas = detectar_respuestas(img)
 
-    # 3 Guardar imagen corregida
+    # 3️⃣ Imagen corregida
     corregida = dibujar_correccion(img, respuestas)
-    ruta_corregida = "corregido.jpg"
+    ruta_corregida = temp.name.replace(".jpg", "_corregido.jpg")
     cv2.imwrite(ruta_corregida, corregida)
 
-    os.remove(ruta_temp)
+    os.remove(temp.name)
 
     return jsonify({
         "ok": True,
@@ -156,36 +200,12 @@ def omr_leer():
         "datos": datos,
         "num_preguntas_detectadas": len(respuestas),
         "respuestas": respuestas,
-        "imagen_corregida": ruta_corregida
+        "imagen_corregida": os.path.basename(ruta_corregida)
     })
 
 # =========================
-# MODO LOCAL (CLI) + RENDER
+# ARRANQUE RENDER (MUY IMPORTANTE)
 # =========================
 if __name__ == "__main__":
-    # Si se ejecuta con imagen (modo script)
-    if len(sys.argv) > 1:
-        ruta = sys.argv[1]
-        img = cv2.imread(ruta)
-
-        codigo = leer_barcode(img)
-        datos = parsear_codigo(codigo) if codigo else {}
-
-        respuestas = detectar_respuestas(img)
-        corregida = dibujar_correccion(img, respuestas)
-
-        ruta_corregida = ruta.replace(".jpg", "_corregido.jpg")
-        cv2.imwrite(ruta_corregida, corregida)
-
-        resultado = {
-            "barcode": codigo,
-            "datos": datos,
-            "num_preguntas_detectadas": len(respuestas),
-            "respuestas": respuestas,
-            "imagen_corregida": ruta_corregida
-        }
-
-        print(json.dumps(resultado))
-    else:
-        # MODO SERVIDOR (Render)
-        app.run(host="0.0.0.0", port=8080)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
