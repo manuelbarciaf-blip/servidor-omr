@@ -8,9 +8,6 @@ import os
 
 app = Flask(__name__)
 
-# =========================
-# LECTOR DE BARCODE
-# =========================
 def leer_barcode(img):
     try:
         barcodes = decode(img)
@@ -22,40 +19,29 @@ def leer_barcode(img):
     except:
         return None
 
-# =========================
-# PARSEAR CODIGO
-# =========================
-def parsear_codigo(codigo):
-    try:
-        return {
-            "id_examen": codigo[0:7],
-            "id_alumno": codigo[7:13],
-            "fecha": codigo[13:]
-        }
-    except:
-        return {
-            "id_examen": None,
-            "id_alumno": None,
-            "fecha": None
-        }
-
-# =========================
-# DETECTAR RESPUESTAS
-# =========================
 def detectar_respuestas(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
-    _, thresh = cv2.threshold(blur, 150, 255, cv2.THRESH_BINARY_INV)
+    gray = cv2.equalizeHist(gray)
+
+    thresh = cv2.adaptiveThreshold(
+        gray, 255,
+        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY_INV,
+        31, 10
+    )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
 
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     burbujas = []
     for c in contornos:
         area = cv2.contourArea(c)
-        if 150 < area < 2000:
+        if 100 < area < 3000:
             x,y,w,h = cv2.boundingRect(c)
             ratio = w/float(h)
-            if 0.7 < ratio < 1.3:
+            if 0.6 < ratio < 1.4:
                 burbujas.append((x,y,w,h))
 
     burbujas = sorted(burbujas, key=lambda b: (b[1], b[0]))
@@ -63,57 +49,40 @@ def detectar_respuestas(img):
     respuestas = []
     opciones = ['A','B','C','D']
 
-    fila = []
-    last_y = None
+    if not burbujas:
+        return []
 
-    for b in burbujas:
+    filas = []
+    fila_actual = [burbujas[0]]
+
+    for b in burbujas[1:]:
+        _, y_prev, _, h_prev = fila_actual[-1]
         x,y,w,h = b
 
-        if last_y is None:
-            last_y = y
+        if abs(y - y_prev) < h_prev * 0.6:
+            fila_actual.append(b)
+        else:
+            filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
+            fila_actual = [b]
 
-        if abs(y - last_y) > 20:
-            if len(fila) == 4:
-                respuestas.append(evaluar_fila(img, fila, opciones))
-            fila = []
-            last_y = y
+    if fila_actual:
+        filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
 
-        fila.append(b)
+    for fila in filas:
+        if len(fila) != 4:
+            continue
 
-        if len(fila) == 4:
-            respuestas.append(evaluar_fila(img, fila, opciones))
-            fila = []
+        intensidades = []
+        for (x,y,w,h) in fila:
+            roi = gray[y:y+h, x:x+w]
+            mean = cv2.mean(roi)[0]
+            intensidades.append(mean)
+
+        idx = int(np.argmin(intensidades))
+        respuestas.append(opciones[idx])
 
     return respuestas
 
-def evaluar_fila(img, fila, opciones):
-    intensidades = []
-    for (x,y,w,h) in fila:
-        roi = img[y:y+h, x:x+w]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        mean = cv2.mean(gray)[0]
-        intensidades.append(mean)
-
-    idx = np.argmin(intensidades)
-    return opciones[idx]
-
-# =========================
-# DIBUJAR CORRECCIÓN
-# =========================
-def dibujar_correccion(img, respuestas):
-    salida = img.copy()
-    y = 50
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    for i, r in enumerate(respuestas):
-        cv2.putText(salida, f"{i+1}:{r}", (50, y), font, 0.6, (0,0,255), 2)
-        y += 25
-    
-    return salida
-
-# =========================
-# ENDPOINT API
-# =========================
 @app.route("/omr/leer", methods=["POST"])
 def omr_leer():
     if 'file' not in request.files:
@@ -129,28 +98,17 @@ def omr_leer():
         return jsonify({"ok": False, "error": "Imagen inválida"})
 
     codigo = leer_barcode(img)
-    datos = parsear_codigo(codigo) if codigo else {"id_examen": None, "id_alumno": None, "fecha": None}
-
     respuestas = detectar_respuestas(img)
-
-    corregida = dibujar_correccion(img, respuestas)
-    ruta_corregida = "corregido.jpg"
-    cv2.imwrite(ruta_corregida, corregida)
 
     os.remove(ruta_temp)
 
     return jsonify({
         "ok": True,
         "barcode": codigo,
-        "datos": datos,
-        "num_preguntas_detectadas": len(respuestas),
         "respuestas": respuestas,
-        "imagen_corregida": ruta_corregida
+        "num_preguntas": len(respuestas)
     })
 
-# =========================
-# RUN SERVER (RENDER)
-# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
