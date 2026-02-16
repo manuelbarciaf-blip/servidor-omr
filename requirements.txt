@@ -1,6 +1,8 @@
-flask==3.0.0
-numpy==1.26.4
-pillow==9.4.0
+flask==2.3.3
+gunicorn==21.2.0
+numpy==1.24.4
+opencv-python-headless==4.8.1.78
+pillow==9.5.0
 pyzbar==0.1.9
-opencv-python-headless==4.9.0.80
+
 
