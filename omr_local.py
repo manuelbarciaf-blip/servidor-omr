@@ -5,6 +5,38 @@ import sys
 import base64
 
 # ============================================================
+# PARÁMETROS DEL DISEÑO (A4 → 1700x2338 px)
+# ============================================================
+
+IMG_W = 1700
+IMG_H = 2338
+
+# Escalas aproximadas (px/mm)
+SX = IMG_W / 210.0   # ≈ 8.095 px/mm
+SY = IMG_H / 297.0   # ≈ 7.87 px/mm
+
+# Cuadrados de referencia (en mm desde bordes)
+# TL: 15 mm izq, 22 mm sup
+# TR: 20 mm dcha, 22 mm sup
+# BL: 15 mm izq, 22 mm inf
+# BR: 20 mm dcha, 22 mm inf
+
+def mm_to_px_x(mm):
+    return mm * SX
+
+def mm_to_px_y(mm):
+    return mm * SY
+
+def get_corner_points():
+    # Coordenadas aproximadas en píxeles
+    tl = (int(mm_to_px_x(15)), int(mm_to_px_y(22)))
+    tr = (IMG_W - int(mm_to_px_x(20)), int(mm_to_px_y(22)))
+    bl = (int(mm_to_px_x(15)), IMG_H - int(mm_to_px_y(22)))
+    br = (IMG_W - int(mm_to_px_x(20)), IMG_H - int(mm_to_px_y(22)))
+    return tl, tr, bl, br
+
+
+# ============================================================
 # LECTOR DE BARCODE (QR + BARCODE LINEAL)
 # ============================================================
 
@@ -23,8 +55,12 @@ def leer_barcode(img):
     if data2:
         return data2.strip()
 
-    # 3) Barcode lineal (detección simple)
-    gradX = cv2.Sobel(gray, ddepth=cv2.CV_32F, dx=1, dy=0)
+    # 3) Barcode lineal (detección simple en franja superior)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    roi_bar = gray[0:int(h*0.25), :]  # franja superior
+
+    gradX = cv2.Sobel(roi_bar, ddepth=cv2.CV_32F, dx=1, dy=0)
     gradX = cv2.convertScaleAbs(gradX)
 
     _, thresh = cv2.threshold(gradX, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -40,11 +76,10 @@ def leer_barcode(img):
         return None
 
     c = max(cnts, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(c)
+    x, y, w2, h2 = cv2.boundingRect(c)
 
-    roi = gray[y:y+h, x:x+w]
+    roi = roi_bar[y:y+h2, x:x+w2]
 
-    # OCR simple para números
     try:
         import pytesseract
         txt = pytesseract.image_to_string(roi, config="--psm 6 digits")
@@ -58,100 +93,115 @@ def leer_barcode(img):
 
 
 # ============================================================
-# DETECCIÓN DE BURBUJAS + IMAGEN DE DEPURACIÓN
+# WARP PERSPECTIVE + RECORTE ZONA RESPUESTAS
+# ============================================================
+
+def normalizar_hoja(img):
+    h, w = img.shape[:2]
+
+    # Puntos fuente aproximados (en la imagen real)
+    tl, tr, bl, br = get_corner_points()
+
+    src = np.float32([
+        [tl[0], tl[1]],
+        [tr[0], tr[1]],
+        [bl[0], bl[1]],
+        [br[0], br[1]]
+    ])
+
+    dst = np.float32([
+        [0, 0],
+        [IMG_W - 1, 0],
+        [0, IMG_H - 1],
+        [IMG_W - 1, IMG_H - 1]
+    ])
+
+    M = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(img, M, (IMG_W, IMG_H))
+
+    return warped
+
+
+def recortar_zona_respuestas(img_norm):
+    # Estos valores se ajustan a tu diseño (aprox)
+    # Puedes afinarlos si ves que la cuadrícula cae un poco desplazada
+    x1 = int(IMG_W * 0.15)   # ~ 15% desde la izquierda
+    x2 = int(IMG_W * 0.90)   # ~ 90% hacia la derecha
+    y1 = int(IMG_H * 0.20)   # ~ 20% desde arriba
+    y2 = int(IMG_H * 0.93)   # ~ 93% hacia abajo
+
+    roi = img_norm[y1:y2, x1:x2]
+    return roi, (x1, y1, x2, y2)
+
+
+# ============================================================
+# DETECCIÓN DE BURBUJAS POR CUADRÍCULA (HASTA 60 PREGUNTAS)
 # ============================================================
 
 def detectar_respuestas(img):
-    debug = img.copy()
+    # 1) Normalizar hoja
+    norm = normalizar_hoja(img)
+    debug = norm.copy()
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 2) Recortar zona de respuestas
+    roi, (rx1, ry1, rx2, ry2) = recortar_zona_respuestas(norm)
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5,5), 0)
     gray = cv2.equalizeHist(gray)
 
-    # Binarización robusta
-    thresh = cv2.adaptiveThreshold(
-        gray, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        41, 10
-    )
+    # Máximo de filas que soporta el diseño
+    MAX_FILAS = 60
+    NUM_COLS = 4
 
-    # Limpieza de ruido
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
-
-    contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    burbujas = []
-    for c in contornos:
-        area = cv2.contourArea(c)
-
-        # Ajustado a burbujas de 85 px de diámetro
-        if 1200 < area < 6000:
-            x,y,w,h = cv2.boundingRect(c)
-            ratio = w/float(h)
-
-            # Circularidad
-            per = cv2.arcLength(c, True)
-            if per == 0:
-                continue
-            circularidad = 4 * np.pi * (area / (per * per))
-
-            if 0.5 < ratio < 1.5 and circularidad > 0.55:
-                burbujas.append((x,y,w,h))
-
-    if not burbujas:
-        return [], debug
-
-    # Ordenar por fila (Y) y columna (X)
-    burbujas = sorted(burbujas, key=lambda b: (b[1], b[0]))
+    h, w = gray.shape
+    fila_h = h / float(MAX_FILAS)
+    col_w = w / float(NUM_COLS)
 
     respuestas = []
-    opciones = ['A','B','C','D']
+    opciones = ['A', 'B', 'C', 'D']
 
-    filas = []
-    fila_actual = [burbujas[0]]
-
-    for b in burbujas[1:]:
-        _, y_prev, _, h_prev = fila_actual[-1]
-        x,y,w,h = b
-
-        # Tolerancia vertical aumentada
-        if abs(y - y_prev) < h_prev * 2.0:
-            fila_actual.append(b)
-        else:
-            filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
-            fila_actual = [b]
-
-    if fila_actual:
-        filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
-
-    # Procesar cada fila
-    for fila in filas:
-        if len(fila) != 4:
-            continue
+    for fila_idx in range(MAX_FILAS):
+        y_start = int(fila_idx * fila_h)
+        y_end   = int((fila_idx + 1) * fila_h)
 
         scores = []
-        for (x,y,w,h) in fila:
-            roi = gray[y:y+h, x:x+w]
+        celdas = []
 
-            # Intensidad media (relleno oscuro)
-            mean = cv2.mean(roi)[0]
+        for col_idx in range(NUM_COLS):
+            x_start = int(col_idx * col_w)
+            x_end   = int((col_idx + 1) * col_w)
 
-            # Varianza (X marcada tiene varianza alta)
-            var = np.var(roi)
+            roi_bur = gray[y_start:y_end, x_start:x_end]
+            if roi_bur.size == 0:
+                scores.append(-1e9)
+                celdas.append((x_start, y_start, x_end, y_end))
+                continue
 
-            # Score combinado
+            mean = cv2.mean(roi_bur)[0]
+            var = float(np.var(roi_bur))
+
             score = (255 - mean) + (var * 0.02)
             scores.append(score)
+            celdas.append((x_start, y_start, x_end, y_end))
+
+        # Si todas las puntuaciones son muy bajas, consideramos que no hay respuesta
+        max_score = max(scores)
+        if max_score < 5:  # umbral muy bajo, ajustable
+            continue
 
         idx = int(np.argmax(scores))
         respuestas.append(opciones[idx])
 
-        # Dibujar en imagen de depuración
-        for i, (x,y,w,h) in enumerate(fila):
-            color = (0,255,0) if i == idx else (0,0,255)
-            cv2.rectangle(debug, (x,y), (x+w, y+h), color, 2)
+        # Dibujar en debug (sobre la hoja normalizada)
+        for i, (xs, ys, xe, ye) in enumerate(celdas):
+            color = (0, 255, 0) if i == idx else (0, 0, 255)
+            # trasladar coords a la imagen normalizada
+            X1 = rx1 + xs
+            Y1 = ry1 + ys
+            X2 = rx1 + xe
+            Y2 = ry1 + ye
+            cv2.rectangle(debug, (X1, Y1), (X2, Y2), color, 2)
 
     return respuestas, debug
 
@@ -175,7 +225,6 @@ def main():
     barcode = leer_barcode(img)
     respuestas, debug_img = detectar_respuestas(img)
 
-    # Convertir imagen de depuración a base64
     _, buffer = cv2.imencode(".jpg", debug_img)
     debug_b64 = base64.b64encode(buffer).decode("utf-8")
 
