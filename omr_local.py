@@ -2,41 +2,71 @@ import cv2
 import numpy as np
 import json
 import sys
+import base64
 
 # ============================================================
-# LECTOR DE BARCODE SIN ZBAR (COMPATIBLE CON RENDER)
+# LECTOR DE BARCODE (QR + BARCODE LINEAL)
 # ============================================================
 
 def leer_barcode(img):
     detector = cv2.QRCodeDetector()
 
+    # 1) QR normal
     data, points, _ = detector.detectAndDecode(img)
-
     if data:
         return data.strip()
 
-    # Intento adicional: invertir imagen
+    # 2) QR invertido
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     inv = cv2.bitwise_not(gray)
     data2, _, _ = detector.detectAndDecode(inv)
-
     if data2:
         return data2.strip()
+
+    # 3) Barcode lineal (detección simple)
+    gradX = cv2.Sobel(gray, ddepth=cv2.CV_32F, dx=1, dy=0)
+    gradX = cv2.convertScaleAbs(gradX)
+
+    _, thresh = cv2.threshold(gradX, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 7))
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+
+    closed = cv2.erode(closed, None, iterations=4)
+    closed = cv2.dilate(closed, None, iterations=4)
+
+    cnts, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None
+
+    c = max(cnts, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(c)
+
+    roi = gray[y:y+h, x:x+w]
+
+    # OCR simple para números
+    try:
+        import pytesseract
+        txt = pytesseract.image_to_string(roi, config="--psm 6 digits")
+        txt = txt.strip()
+        if txt:
+            return txt
+    except:
+        pass
 
     return None
 
 
 # ============================================================
-# DETECCIÓN DE BURBUJAS
+# DETECCIÓN DE BURBUJAS + IMAGEN DE DEPURACIÓN
 # ============================================================
 
 def detectar_respuestas(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    debug = img.copy()
 
-    # Normalizar iluminación
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
 
-    # Binarización adaptativa
     thresh = cv2.adaptiveThreshold(
         gray, 255,
         cv2.ADAPTIVE_THRESH_MEAN_C,
@@ -44,7 +74,6 @@ def detectar_respuestas(img):
         31, 10
     )
 
-    # Limpiar ruido
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
 
@@ -60,7 +89,7 @@ def detectar_respuestas(img):
                 burbujas.append((x,y,w,h))
 
     if not burbujas:
-        return []
+        return [], debug
 
     burbujas = sorted(burbujas, key=lambda b: (b[1], b[0]))
 
@@ -96,7 +125,12 @@ def detectar_respuestas(img):
         idx = int(np.argmin(intensidades))
         respuestas.append(opciones[idx])
 
-    return respuestas
+        # Dibujar burbujas en debug
+        for i, (x,y,w,h) in enumerate(fila):
+            color = (0,255,0) if i == idx else (0,0,255)
+            cv2.rectangle(debug, (x,y), (x+w, y+h), color, 2)
+
+    return respuestas, debug
 
 
 # ============================================================
@@ -116,15 +150,21 @@ def main():
         return
 
     barcode = leer_barcode(img)
-    respuestas = detectar_respuestas(img)
+    respuestas, debug_img = detectar_respuestas(img)
+
+    # Convertir imagen de depuración a base64
+    _, buffer = cv2.imencode(".jpg", debug_img)
+    debug_b64 = base64.b64encode(buffer).decode("utf-8")
 
     print(json.dumps({
         "ok": True,
         "barcode": barcode,
         "respuestas": respuestas,
-        "num_preguntas": len(respuestas)
+        "num_preguntas": len(respuestas),
+        "debug_image": debug_b64
     }))
 
 
 if __name__ == "__main__":
     main()
+
