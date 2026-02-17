@@ -236,13 +236,6 @@ def main():
     print("═" * 70)
     print()
 
-    # Test Telegram
-    print("📤 Test de connexion Telegram...")
-    if send_telegram("🤖 <b>Bot Ionic Money démarré</b>\n\nSurveillance USDC.e & USDT activée sur Render.com."):
-        print("✅ Message de test envoyé\n")
-    else:
-        print("⚠️  Échec du test Telegram\n")
-
     # Connexion RPC
     print("🔗 Connexion au RPC Lisk...")
     w3 = connect()
