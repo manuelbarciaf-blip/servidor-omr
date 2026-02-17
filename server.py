@@ -9,6 +9,10 @@ et envoie des alertes Telegram dès qu'il y a ≥ $20 de liquidité.
 Optimisé pour tourner 24/7 sur Render.com (plan gratuit).
 ═══════════════════════════════════════════════════════════════════════════
 """
+from flask import Flask, request, jsonify
+import subprocess
+import tempfile
+import json
 import os
 import time
 import sys
@@ -246,6 +250,41 @@ def main():
         print("\n👋 Arrêté.")
         send_telegram("🛑 <b>Bot Ionic Money arrêté</b>")
 
+app = Flask(__name__)
 
+@app.post("/corregir_omr")
+def corregir_omr():
+    if "file" not in request.files:
+        return jsonify({"ok": False, "error": "No se envió archivo"}), 400
+
+    f = request.files["file"]
+
+    # Guardar archivo temporal
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+        f.save(tmp.name)
+        ruta = tmp.name
+
+    # Ejecutar omr_local.py
+    try:
+        output = subprocess.check_output(
+            ["python3", "omr_local.py", ruta],
+            stderr=subprocess.STDOUT
+        ).decode()
+    except subprocess.CalledProcessError as e:
+        return jsonify({
+            "ok": False,
+            "error": "Error ejecutando omr_local.py",
+            "raw": e.output.decode()
+        })
+
+    # Parsear JSON
+    try:
+        data = json.loads(output)
+    except:
+        data = {"ok": False, "error": "Salida JSON inválida", "raw": output}
+
+    os.remove(ruta)
+
+    return jsonify(data)
 if __name__ == "__main__":
     main()
