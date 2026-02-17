@@ -28,11 +28,6 @@ except ImportError:
 #  CONFIGURATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-TELEGRAM_BOT_TOKEN = "8591638141:AAHwunx9OV-5TV-2ThKaWUmXgX2rXL0kZWU"
-TELEGRAM_CHAT_ID   = "862574975"
-
-# Seuil minimum pour alerter
-LIQUIDITY_THRESHOLD = 20  # dollars
 
 # Intervalle entre chaque vérification
 CHECK_INTERVAL = 30  # secondes
@@ -110,43 +105,6 @@ def get_liquidity(w3, symbol):
         "supply_apy_pct":  rate_to_apy(s_rate),
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  TELEGRAM
-# ══════════════════════════════════════════════════════════════════════════════
-
-def send_telegram(message):
-    """Envoie un message Telegram."""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        resp = requests.post(url, json=payload, timeout=10)
-        return resp.status_code == 200
-    except Exception as e:
-        print(f"⚠️  Erreur Telegram : {e}")
-        return False
-
-
-def format_alert(data):
-    """Formate un message d'alerte."""
-    sym  = data["symbol"]
-    cash = data["cash"]
-    tvl  = data["tvl"]
-    util = data["utilization_pct"]
-    sapy = data["supply_apy_pct"]
-
-    icon = "💧" if cash > 100 else "🚨"
-
-    return f"""
-{icon} <b>IONIC MONEY — Liquidité {sym}</b>
-
-💰 <b>Liquidité dispo :</b> ${cash:,.2f}
-🏦 <b>TVL totale :</b> ${tvl:,.2f}
-📊 <b>Utilisation :</b> {util}%
-📈 <b>APY Dépôt :</b> {sapy}%
-
-🕐 {datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")} UTC
-    """.strip()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
