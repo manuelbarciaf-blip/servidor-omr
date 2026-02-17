@@ -9,7 +9,7 @@ et envoie des alertes Telegram dès qu'il y a ≥ $20 de liquidité.
 Optimisé pour tourner 24/7 sur Render.com (plan gratuit).
 ═══════════════════════════════════════════════════════════════════════════
 """
-
+import os
 import time
 import sys
 from datetime import datetime
