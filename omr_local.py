@@ -65,27 +65,35 @@ def detectar_respuestas(img):
     debug = img.copy()
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5,5), 0)
     gray = cv2.equalizeHist(gray)
 
     thresh = cv2.adaptiveThreshold(
         gray, 255,
-        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
-        31, 10
+        41, 10
     )
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
 
     contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     burbujas = []
     for c in contornos:
         area = cv2.contourArea(c)
-        if 100 < area < 3000:
+        if 200 < area < 8000:  # AUMENTADO
             x,y,w,h = cv2.boundingRect(c)
             ratio = w/float(h)
-            if 0.6 < ratio < 1.4:
+
+            # Circularidad
+            per = cv2.arcLength(c, True)
+            if per == 0:
+                continue
+            circularidad = 4 * np.pi * (area / (per * per))
+
+            if 0.5 < ratio < 1.5 and circularidad > 0.4:
                 burbujas.append((x,y,w,h))
 
     if not burbujas:
@@ -103,7 +111,8 @@ def detectar_respuestas(img):
         _, y_prev, _, h_prev = fila_actual[-1]
         x,y,w,h = b
 
-        if abs(y - y_prev) < h_prev * 0.6:
+        # Tolerancia vertical aumentada
+        if abs(y - y_prev) < h_prev * 1.2:
             fila_actual.append(b)
         else:
             filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
@@ -167,4 +176,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
