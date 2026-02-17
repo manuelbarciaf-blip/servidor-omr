@@ -68,6 +68,7 @@ def detectar_respuestas(img):
     gray = cv2.GaussianBlur(gray, (5,5), 0)
     gray = cv2.equalizeHist(gray)
 
+    # Binarización robusta
     thresh = cv2.adaptiveThreshold(
         gray, 255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -75,6 +76,7 @@ def detectar_respuestas(img):
         41, 10
     )
 
+    # Limpieza de ruido
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
 
@@ -83,7 +85,9 @@ def detectar_respuestas(img):
     burbujas = []
     for c in contornos:
         area = cv2.contourArea(c)
-        if 200 < area < 8000:  # AUMENTADO
+
+        # Ajustado a burbujas de 85 px de diámetro
+        if 1200 < area < 6000:
             x,y,w,h = cv2.boundingRect(c)
             ratio = w/float(h)
 
@@ -93,12 +97,13 @@ def detectar_respuestas(img):
                 continue
             circularidad = 4 * np.pi * (area / (per * per))
 
-            if 0.5 < ratio < 1.5 and circularidad > 0.4:
+            if 0.5 < ratio < 1.5 and circularidad > 0.55:
                 burbujas.append((x,y,w,h))
 
     if not burbujas:
         return [], debug
 
+    # Ordenar por fila (Y) y columna (X)
     burbujas = sorted(burbujas, key=lambda b: (b[1], b[0]))
 
     respuestas = []
@@ -112,7 +117,7 @@ def detectar_respuestas(img):
         x,y,w,h = b
 
         # Tolerancia vertical aumentada
-        if abs(y - y_prev) < h_prev * 1.2:
+        if abs(y - y_prev) < h_prev * 2.0:
             fila_actual.append(b)
         else:
             filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
@@ -121,20 +126,29 @@ def detectar_respuestas(img):
     if fila_actual:
         filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
 
+    # Procesar cada fila
     for fila in filas:
         if len(fila) != 4:
             continue
 
-        intensidades = []
+        scores = []
         for (x,y,w,h) in fila:
             roi = gray[y:y+h, x:x+w]
-            mean = cv2.mean(roi)[0]
-            intensidades.append(mean)
 
-        idx = int(np.argmin(intensidades))
+            # Intensidad media (relleno oscuro)
+            mean = cv2.mean(roi)[0]
+
+            # Varianza (X marcada tiene varianza alta)
+            var = np.var(roi)
+
+            # Score combinado
+            score = (255 - mean) + (var * 0.02)
+            scores.append(score)
+
+        idx = int(np.argmax(scores))
         respuestas.append(opciones[idx])
 
-        # Dibujar burbujas en debug
+        # Dibujar en imagen de depuración
         for i, (x,y,w,h) in enumerate(fila):
             color = (0,255,0) if i == idx else (0,0,255)
             cv2.rectangle(debug, (x,y), (x+w, y+h), color, 2)
@@ -176,5 +190,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
