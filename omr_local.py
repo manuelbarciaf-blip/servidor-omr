@@ -2,26 +2,41 @@ import cv2
 import numpy as np
 import json
 import sys
-from pyzbar.pyzbar import decode
+
+# ============================================================
+# LECTOR DE BARCODE SIN ZBAR (COMPATIBLE CON RENDER)
+# ============================================================
 
 def leer_barcode(img):
-    try:
-        barcodes = decode(img)
-        for barcode in barcodes:
-            codigo = barcode.data.decode("utf-8")
-            if codigo:
-                return codigo
-        return None
-    except:
-        return None
+    detector = cv2.QRCodeDetector()
+
+    data, points, _ = detector.detectAndDecode(img)
+
+    if data:
+        return data.strip()
+
+    # Intento adicional: invertir imagen
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    inv = cv2.bitwise_not(gray)
+    data2, _, _ = detector.detectAndDecode(inv)
+
+    if data2:
+        return data2.strip()
+
+    return None
+
+
+# ============================================================
+# DETECCIÓN DE BURBUJAS
+# ============================================================
 
 def detectar_respuestas(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # 1) Normalizar iluminación
+    # Normalizar iluminación
     gray = cv2.equalizeHist(gray)
 
-    # 2) Binarización adaptativa
+    # Binarización adaptativa
     thresh = cv2.adaptiveThreshold(
         gray, 255,
         cv2.ADAPTIVE_THRESH_MEAN_C,
@@ -29,7 +44,7 @@ def detectar_respuestas(img):
         31, 10
     )
 
-    # 3) Limpiar ruido
+    # Limpiar ruido
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
 
@@ -44,6 +59,9 @@ def detectar_respuestas(img):
             if 0.6 < ratio < 1.4:
                 burbujas.append((x,y,w,h))
 
+    if not burbujas:
+        return []
+
     burbujas = sorted(burbujas, key=lambda b: (b[1], b[0]))
 
     respuestas = []
@@ -51,29 +69,39 @@ def detectar_respuestas(img):
 
     filas = []
     fila_actual = [burbujas[0]]
+
     for b in burbujas[1:]:
         _, y_prev, _, h_prev = fila_actual[-1]
         x,y,w,h = b
+
         if abs(y - y_prev) < h_prev * 0.6:
             fila_actual.append(b)
         else:
             filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
             fila_actual = [b]
+
     if fila_actual:
         filas.append(sorted(fila_actual, key=lambda bb: bb[0]))
 
     for fila in filas:
         if len(fila) != 4:
             continue
+
         intensidades = []
         for (x,y,w,h) in fila:
             roi = gray[y:y+h, x:x+w]
             mean = cv2.mean(roi)[0]
             intensidades.append(mean)
+
         idx = int(np.argmin(intensidades))
         respuestas.append(opciones[idx])
 
     return respuestas
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
     if len(sys.argv) < 2:
@@ -96,6 +124,7 @@ def main():
         "respuestas": respuestas,
         "num_preguntas": len(respuestas)
     }))
+
 
 if __name__ == "__main__":
     main()
