@@ -9,13 +9,12 @@ et envoie des alertes Telegram dès qu'il y a ≥ $20 de liquidité.
 Optimisé pour tourner 24/7 sur Render.com (plan gratuit).
 ═══════════════════════════════════════════════════════════════════════════
 """
-from flask import Flask, request, jsonify
-import subprocess
-import tempfile
-import json
 import os
 import time
 import sys
+import json
+import tempfile
+import subprocess
 from datetime import datetime
 
 try:
@@ -187,6 +186,83 @@ def check_and_alert(w3):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  HTTP SERVER (Render.com + endpoint /corregir_omr)
+# ══════════════════════════════════════════════════════════════════════════════
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # Health check básico
+        if self.path in ("/", "/health"):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'Ionic Money Bot - Running OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        # Endpoint OMR: recibe el binario de UNA imagen en el cuerpo del POST
+        if self.path != "/corregir_omr":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(content_length)
+
+            # Guardar imagen temporal
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                tmp.write(body)
+                ruta = tmp.name
+
+            # Ejecutar omr_local.py
+            try:
+                output = subprocess.check_output(
+                    ["python3", "omr_local.py", ruta],
+                    stderr=subprocess.STDOUT
+                ).decode()
+                data = json.loads(output)
+            except subprocess.CalledProcessError as e:
+                data = {
+                    "ok": False,
+                    "error": "Error ejecutando omr_local.py",
+                    "raw": e.output.decode(errors="ignore")
+                }
+            except Exception as e:
+                data = {"ok": False, "error": str(e)}
+
+            try:
+                os.remove(ruta)
+            except Exception:
+                pass
+
+            response = json.dumps(data).encode()
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        except Exception as e:
+            resp = json.dumps({"ok": False, "error": f"Excepción en servidor: {e}"}).encode()
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
+
+    def log_message(self, format, *args):
+        # Silenciar logs HTTP
+        return
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  MAIN LOOP
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -217,21 +293,8 @@ def main():
     # RENDER.COM FIX: Démarrer serveur HTTP pour port binding
     print("🌐 Démarrage serveur HTTP pour Render.com...")
     PORT = int(os.environ.get('PORT', 10000))
-    
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    import threading
-    
-    class HealthHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'Ionic Money Bot - Running OK')
-        
-        def log_message(self, format, *args):
-            pass  # Silence les logs HTTP
-    
-    server = HTTPServer(('0.0.0.0', PORT), HealthHandler)
+
+    server = HTTPServer(('0.0.0.0', PORT), Handler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     print(f"✅ Serveur HTTP démarré sur port {PORT}\n")
@@ -250,41 +313,6 @@ def main():
         print("\n👋 Arrêté.")
         send_telegram("🛑 <b>Bot Ionic Money arrêté</b>")
 
-app = Flask(__name__)
 
-@app.post("/corregir_omr")
-def corregir_omr():
-    if "file" not in request.files:
-        return jsonify({"ok": False, "error": "No se envió archivo"}), 400
-
-    f = request.files["file"]
-
-    # Guardar archivo temporal
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-        f.save(tmp.name)
-        ruta = tmp.name
-
-    # Ejecutar omr_local.py
-    try:
-        output = subprocess.check_output(
-            ["python3", "omr_local.py", ruta],
-            stderr=subprocess.STDOUT
-        ).decode()
-    except subprocess.CalledProcessError as e:
-        return jsonify({
-            "ok": False,
-            "error": "Error ejecutando omr_local.py",
-            "raw": e.output.decode()
-        })
-
-    # Parsear JSON
-    try:
-        data = json.loads(output)
-    except:
-        data = {"ok": False, "error": "Salida JSON inválida", "raw": output}
-
-    os.remove(ruta)
-
-    return jsonify(data)
 if __name__ == "__main__":
     main()
