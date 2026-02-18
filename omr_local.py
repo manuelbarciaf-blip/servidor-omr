@@ -6,6 +6,9 @@ import numpy as np
 from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
+# ---------------------------------------------------------
+# 1) LECTURA QR
+# ---------------------------------------------------------
 def leer_qr(img):
     codes = zbar_decode(img)
     if not codes:
@@ -14,12 +17,15 @@ def leer_qr(img):
     data = codes[0].data.decode("utf-8").strip()
     partes = data.split("|")
 
-    id_examen = int(partes[0]) if len(partes) >= 1 else None
-    id_alumno = int(partes[1]) if len(partes) >= 2 else None
+    id_examen = int(partes[0]) if len(partes) >= 1 and partes[0].isdigit() else None
+    id_alumno = int(partes[1]) if len(partes) >= 2 and partes[1].isdigit() else None
     fecha_qr  = partes[2] if len(partes) >= 3 else None
 
     return data, id_examen, id_alumno, fecha_qr
 
+# ---------------------------------------------------------
+# 2) DETECCIÓN DE LOS 4 CUADRADOS (para warp)
+# ---------------------------------------------------------
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5,5), 0)
@@ -66,10 +72,19 @@ def warp_hoja(img, corners):
     M = cv2.getPerspectiveTransform(corners, dst)
     return cv2.warpPerspective(img, M, (dst_w, dst_h))
 
-def detectar_respuestas(warped):
+# ---------------------------------------------------------
+# 3) PLANTILLA 20 PREGUNTAS: ZONA DE BURBUJAS
+#    (ajusta estos porcentajes si ves que no cae perfecto)
+# ---------------------------------------------------------
+def detectar_respuestas_20(warped):
     h, w = warped.shape[:2]
-    y0, y1 = int(h*0.35), int(h*0.9)
-    x0, x1 = int(w*0.2), int(w*0.9)
+
+    # Zona aproximada donde está la tabla A–D (ajustable)
+    y0 = int(h * 0.25)
+    y1 = int(h * 0.90)
+    x0 = int(w * 0.10)
+    x1 = int(w * 0.90)
+
     zona = warped[y0:y1, x0:x1]
 
     gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
@@ -102,13 +117,17 @@ def detectar_respuestas(warped):
         max_val = max(valores)
         idx = valores.index(max_val)
 
-        if max_val < 50:
+        # Umbral mínimo de tinta para considerar marcada (ajustable)
+        if max_val < 80:
             respuestas.append(None)
         else:
             respuestas.append(letras[idx])
 
     return respuestas
 
+# ---------------------------------------------------------
+# 4) MAIN
+# ---------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
         print(json.dumps({"ok": False, "error": "Uso: omr_local.py <imagen>"}))
@@ -130,7 +149,7 @@ def main():
         warped = warp_hoja(img, corners)
         warped_ok = True
 
-    respuestas = detectar_respuestas(warped)
+    respuestas = detectar_respuestas_20(warped)
 
     _, buffer = cv2.imencode(".jpg", warped)
     debug_b64 = base64.b64encode(buffer).decode()
@@ -149,4 +168,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
