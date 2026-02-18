@@ -73,16 +73,16 @@ def warp_hoja(img, corners):
     return cv2.warpPerspective(img, M, (dst_w, dst_h))
 
 # ---------------------------------------------------------
-# 3) PLANTILLA 20 PREGUNTAS: ZONA DE BURBUJAS
+# 3) DETECCIÓN DE RESPUESTAS (20 preguntas)
 # ---------------------------------------------------------
 def detectar_respuestas_20(warped):
     h, w = warped.shape[:2]
 
-    # Zona aproximada donde está la tabla A–D (ajustable)
-    y0 = int(h * 0.25)
-    y1 = int(h * 0.90)
-    x0 = int(w * 0.10)
-    x1 = int(w * 0.90)
+    # *** CALIBRACIÓN ESPECÍFICA PARA TU HOJA ***
+    y0 = int(h * 0.12)
+    y1 = int(h * 0.70)
+    x0 = int(w * 0.05)
+    x1 = int(w * 0.80)
 
     zona = warped[y0:y1, x0:x1]
 
@@ -95,8 +95,8 @@ def detectar_respuestas_20(warped):
     respuestas = []
 
     h_z, w_z = th.shape
-    alto_fila = h_z // filas
-    ancho_col = w_z // cols
+    alto_fila = int(h_z / filas)
+    ancho_col = int(w_z / cols)
 
     letras = ["A","B","C","D"]
 
@@ -116,7 +116,8 @@ def detectar_respuestas_20(warped):
         max_val = max(valores)
         idx = valores.index(max_val)
 
-        if max_val < 80:
+        # *** UMBRAL AJUSTADO PARA TU HOJA ***
+        if max_val < 40:
             respuestas.append(None)
         else:
             respuestas.append(letras[idx])
