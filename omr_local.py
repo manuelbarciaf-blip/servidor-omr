@@ -74,7 +74,6 @@ def warp_hoja(img, corners):
 
 # ---------------------------------------------------------
 # 3) PLANTILLA 20 PREGUNTAS: ZONA DE BURBUJAS
-#    (ajusta estos porcentajes si ves que no cae perfecto)
 # ---------------------------------------------------------
 def detectar_respuestas_20(warped):
     h, w = warped.shape[:2]
@@ -117,7 +116,6 @@ def detectar_respuestas_20(warped):
         max_val = max(valores)
         idx = valores.index(max_val)
 
-        # Umbral mínimo de tinta para considerar marcada (ajustable)
         if max_val < 80:
             respuestas.append(None)
         else:
@@ -166,5 +164,16 @@ def main():
     }
     print(json.dumps(out))
 
+# ---------------------------------------------------------
+# 5) CAPTURA GLOBAL DE ERRORES
+# ---------------------------------------------------------
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print(json.dumps({
+            "ok": False,
+            "error": str(e),
+            "trace": traceback.format_exc()
+        }))
