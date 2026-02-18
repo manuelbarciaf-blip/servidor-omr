@@ -37,8 +37,8 @@ def encontrar_cuadrados(img):
     for c in contours:
         area = cv2.contourArea(c)
 
-        # Cuadrados pequeños → área baja
-        if area < 80 or area > 8000:
+        # Cuadrados MUY pequeños → área baja
+        if area < 20 or area > 5000:
             continue
 
         approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
@@ -47,7 +47,7 @@ def encontrar_cuadrados(img):
 
         x, y, w, h = cv2.boundingRect(approx)
         ratio = w / float(h)
-        if 0.75 < ratio < 1.25:
+        if 0.70 < ratio < 1.30:
             candidates.append((x, y, approx))
 
     if len(candidates) < 4:
