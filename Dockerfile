@@ -1,7 +1,6 @@
 FROM python:3.10
 
-# Librería del sistema necesaria para pyzbar
-RUN apt-get update && apt-get install -y libzbar0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y libzbar0
 
 WORKDIR /app
 
