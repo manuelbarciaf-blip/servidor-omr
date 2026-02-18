@@ -24,7 +24,7 @@ def leer_qr(img):
     return data, id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
-# 2) DETECCIÓN DE LOS 4 CUADRADOS (para warp)
+# 2) DETECCIÓN DE CUADRADOS (warp)
 # ---------------------------------------------------------
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -33,42 +33,47 @@ def encontrar_cuadrados(img):
     contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     candidates = []
-    h, w = gray.shape
-    area_img = w * h
 
     for c in contours:
         area = cv2.contourArea(c)
-        if area < area_img * 0.001:
+
+        # Cuadrados pequeños → área baja
+        if area < 80 or area > 8000:
             continue
+
         approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
-        if len(approx) == 4:
-            x, y, bw, bh = cv2.boundingRect(approx)
-            ratio = bw / float(bh)
-            if 0.8 < ratio < 1.2:
-                candidates.append((x, y, bw, bh, approx))
+        if len(approx) != 4:
+            continue
+
+        x, y, w, h = cv2.boundingRect(approx)
+        ratio = w / float(h)
+        if 0.75 < ratio < 1.25:
+            candidates.append((x, y, approx))
 
     if len(candidates) < 4:
         return None
 
-    pts = []
-    for x, y, bw, bh, approx in candidates:
-        cx = x + bw/2
-        cy = y + bh/2
-        pts.append((cx, cy, approx))
+    # Ordenar por posición
+    pts = sorted(candidates, key=lambda p: (p[1], p[0]))
 
-    pts = sorted(pts, key=lambda p: p[1])
-    top = sorted(pts[:2], key=lambda p: p[0])
-    bottom = sorted(pts[2:4], key=lambda p: p[0])
+    # Top-left, top-right, bottom-left, bottom-right
+    pts_sorted = [
+        pts[0][2].reshape(4,2).mean(axis=0),
+        pts[1][2].reshape(4,2).mean(axis=0),
+        pts[-2][2].reshape(4,2).mean(axis=0),
+        pts[-1][2].reshape(4,2).mean(axis=0)
+    ]
 
-    def centro(a):
-        return a.reshape(4,2).mean(axis=0)
-
-    return np.float32([centro(top[0][2]), centro(top[1][2]),
-                       centro(bottom[0][2]), centro(bottom[1][2])])
+    return np.float32(pts_sorted)
 
 def warp_hoja(img, corners):
     dst_w, dst_h = 900, 1300
-    dst = np.float32([[50,50],[dst_w-50,50],[50,dst_h-50],[dst_w-50,dst_h-50]])
+    dst = np.float32([
+        [50,50],
+        [dst_w-50,50],
+        [50,dst_h-50],
+        [dst_w-50,dst_h-50]
+    ])
     M = cv2.getPerspectiveTransform(corners, dst)
     return cv2.warpPerspective(img, M, (dst_w, dst_h))
 
@@ -78,7 +83,6 @@ def warp_hoja(img, corners):
 def detectar_respuestas_20(warped):
     h, w = warped.shape[:2]
 
-    # Recorte tolerante
     y0 = int(h * 0.12)
     y1 = int(h * 0.70)
     x0 = int(w * 0.05)
@@ -125,7 +129,6 @@ def detectar_respuestas_20(warped):
 def detectar_respuestas_60(warped):
     h, w = warped.shape[:2]
 
-    # Recorte tolerante
     y0 = int(h * 0.10)
     y1 = int(h * 0.92)
     x0 = int(w * 0.05)
