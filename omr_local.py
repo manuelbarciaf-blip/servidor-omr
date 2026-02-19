@@ -7,14 +7,21 @@ from pyzbar.pyzbar import decode as zbar_decode
 import base64
 import os
 
+CONFIG_FILE = "omr_config.json"
+drawing = False
+ix, iy = -1, -1
+rx0, ry0, rx1, ry1 = 0, 0, 0, 0
+
 # ---------------------------------------------------------
 # 1) LECTURA QR
 # ---------------------------------------------------------
 def leer_qr(img):
     codes = zbar_decode(img)
+
     if not codes:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         codes = zbar_decode(gray)
+
     if not codes:
         return None, None, None, None
 
@@ -28,11 +35,12 @@ def leer_qr(img):
     return data, id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
-# 2) DETECTAR ESQUINAS
+# 2) DETECTAR CUADRADOS
 # ---------------------------------------------------------
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
     contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     candidatos = []
@@ -85,20 +93,59 @@ def warp_hoja(img, corners):
     return cv2.warpPerspective(img, M, (dst_w, dst_h))
 
 # ---------------------------------------------------------
-# 4) DETECCIÓN 20 PREGUNTAS + SUPER DEBUG
+# 4) SELECCIONAR AREA CON RATON (CALIBRACIÓN)
 # ---------------------------------------------------------
-def detectar_respuestas_20(warped, debug_dir="omr_debug"):
-    os.makedirs(debug_dir, exist_ok=True)
+def seleccionar_area(imagen):
+    global ix, iy, drawing, rx0, ry0, rx1, ry1
 
-    h, w = warped.shape[:2]
+    clone = imagen.copy()
 
-    x0 = int(w * 0.12)
-    y0 = int(h * 0.23)
-    x1 = int(w * 0.88)
-    y1 = int(h * 0.87)
+    def mouse(event, x, y, flags, param):
+        global ix, iy, drawing, rx0, ry0, rx1, ry1
 
+        if event == cv2.EVENT_LBUTTONDOWN:
+            drawing = True
+            ix, iy = x, y
+
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if drawing:
+                img_temp = clone.copy()
+                cv2.rectangle(img_temp, (ix, iy), (x, y), (0,255,0), 2)
+                cv2.imshow("Calibrar OMR - Selecciona burbujas", img_temp)
+
+        elif event == cv2.EVENT_LBUTTONUP:
+            drawing = False
+            rx0, ry0 = ix, iy
+            rx1, ry1 = x, y
+            cv2.rectangle(clone, (rx0, ry0), (rx1, ry1), (0,255,0), 2)
+            cv2.imshow("Calibrar OMR - Selecciona burbujas", clone)
+
+    cv2.imshow("Calibrar OMR - Selecciona burbujas", clone)
+    cv2.setMouseCallback("Calibrar OMR - Selecciona burbujas", mouse)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+    return rx0, ry0, rx1, ry1
+
+# ---------------------------------------------------------
+# 5) CARGAR CONFIG
+# ---------------------------------------------------------
+def cargar_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return None
+
+def guardar_config(cfg):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f)
+
+# ---------------------------------------------------------
+# 6) DETECCIÓN 20 PREGUNTAS (USANDO AREA CALIBRADA)
+# ---------------------------------------------------------
+def detectar_respuestas_20(warped, area):
+    x0, y0, x1, y1 = area
     zona = warped[y0:y1, x0:x1]
-    cv2.imwrite(os.path.join(debug_dir, "zona_respuestas.jpg"), zona)
 
     gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3,3), 0)
@@ -120,8 +167,7 @@ def detectar_respuestas_20(warped, debug_dir="omr_debug"):
     for fila in range(filas):
         y0f = fila * alto_fila
         y1f = (fila + 1) * alto_fila
-        fila_img = th[y0f:y1f, :].copy()
-        fila_color = cv2.cvtColor(fila_img, cv2.COLOR_GRAY2BGR)
+        fila_img = th[y0f:y1f, :]
 
         valores = []
         for o in range(opciones):
@@ -130,102 +176,69 @@ def detectar_respuestas_20(warped, debug_dir="omr_debug"):
             celda = fila_img[:, x0o:x1o]
 
             ch, cw = celda.shape
-            cy0 = int(ch * 0.25)
-            cy1 = int(ch * 0.75)
-            cx0 = int(cw * 0.25)
-            cx1 = int(cw * 0.75)
-
-            centro = celda[cy0:cy1, cx0:cx1]
+            centro = celda[int(ch*0.3):int(ch*0.7), int(cw*0.3):int(cw*0.7)]
             negro = cv2.countNonZero(centro)
             valores.append(negro)
-
-            # guardar imagen de cada opción
-            op_path = os.path.join(
-                debug_dir,
-                f"fila_{fila+1:02d}_op_{o+1}_{letras[o]}.jpg"
-            )
-            cv2.imwrite(op_path, celda)
 
         max_val = max(valores)
         idx = valores.index(max_val)
         media = np.mean(valores)
 
-        print(f"Fila {fila+1:02d}: valores={valores}, max={max_val}, media={media:.2f}, elegido={letras[idx]}")
-
-        if max_val < media * 1.6:
+        if max_val < media * 1.5:
             respuestas.append(None)
-            elegido = None
         else:
             respuestas.append(letras[idx])
-            elegido = idx
-
-        # dibujar debug en la fila
-        for o in range(opciones):
-            x0o = o * ancho_op
-            x1o = (o + 1) * ancho_op
-            color = (0,255,0) if o == elegido else (0,0,255)
-            cv2.rectangle(fila_color, (x0o, 0), (x1o, alto_fila-1), color, 1)
-
-        fila_path = os.path.join(debug_dir, f"fila_{fila+1:02d}_debug.jpg")
-        cv2.imwrite(fila_path, fila_color)
 
     return respuestas
 
 # ---------------------------------------------------------
-# 5) MAIN
+# 7) MAIN
 # ---------------------------------------------------------
 def main():
-    try:
-        if len(sys.argv) < 2:
-            print(json.dumps({"ok": False, "error": "Uso: omr_local.py <imagen>"}))
-            return
+    if len(sys.argv) < 2:
+        print(json.dumps({"ok": False, "error": "Uso: omr_local.py <imagen> [--calibrar]"}))
+        return
 
-        ruta = sys.argv[1]
-        img = cv2.imread(ruta)
+    ruta = sys.argv[1]
+    modo_calibrar = "--calibrar" in sys.argv
 
-        if img is None:
-            print(json.dumps({"ok": False, "error": "No se pudo leer la imagen"}))
-            return
+    img = cv2.imread(ruta)
+    if img is None:
+        print(json.dumps({"ok": False, "error": "No se pudo leer la imagen"}))
+        return
 
-        codigo, id_examen, id_alumno, fecha_qr = leer_qr(img)
+    codigo, id_examen, id_alumno, fecha_qr = leer_qr(img)
 
-        corners = encontrar_cuadrados(img)
+    corners = encontrar_cuadrados(img)
+    warped = warp_hoja(img, corners) if corners is not None else img.copy()
 
-        if corners is not None:
-            warped = warp_hoja(img, corners)
-            warp_ok = True
-        else:
-            warped = img.copy()
-            warp_ok = False
+    if modo_calibrar:
+        area = seleccionar_area(warped)
+        guardar_config({"area": area})
+        print("Área guardada:", area)
+        return
 
-        os.makedirs("omr_debug", exist_ok=True)
-        cv2.imwrite("omr_debug/warp.jpg", warped)
+    cfg = cargar_config()
+    if not cfg:
+        print(json.dumps({"ok": False, "error": "Primero ejecuta en modo calibración"}))
+        return
 
-        respuestas = detectar_respuestas_20(warped, debug_dir="omr_debug")
+    area = cfg["area"]
+    respuestas = detectar_respuestas_20(warped, area)
 
-        _, buffer = cv2.imencode(".jpg", warped)
-        debug_b64 = base64.b64encode(buffer).decode()
+    _, buffer = cv2.imencode(".jpg", warped)
+    debug_b64 = base64.b64encode(buffer).decode()
 
-        out = {
-            "ok": True,
-            "codigo": codigo,
-            "id_examen": id_examen,
-            "id_alumno": id_alumno,
-            "fecha_qr": fecha_qr,
-            "respuestas": respuestas,
-            "warp_ok": warp_ok,
-            "debug_image": debug_b64
-        }
-
-        print(json.dumps(out))
-
-    except Exception as e:
-        import traceback
-        print(json.dumps({
-            "ok": False,
-            "error": str(e),
-            "trace": traceback.format_exc()
-        }))
+    print(json.dumps({
+        "ok": True,
+        "codigo": codigo,
+        "id_examen": id_examen,
+        "id_alumno": id_alumno,
+        "fecha_qr": fecha_qr,
+        "respuestas": respuestas,
+        "warp_ok": True,
+        "debug_image": debug_b64
+    }))
 
 if __name__ == "__main__":
     main()
