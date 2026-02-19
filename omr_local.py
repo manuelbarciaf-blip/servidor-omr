@@ -7,13 +7,11 @@ from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
 # ---------------------------------------------------------
-# 1) LECTURA QR (TOLERANTE)
+# 1) LECTURA QR (ROBUSTA)
 # ---------------------------------------------------------
 def leer_qr(img):
-    # Intento 1: imagen original
     codes = zbar_decode(img)
 
-    # Intento 2: en gris (mucho mejor para escáner)
     if not codes:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         codes = zbar_decode(gray)
@@ -31,7 +29,7 @@ def leer_qr(img):
     return data, id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
-# 2) DETECTAR 4 ESQUINAS NEGRAS (TU PLANTILLA)
+# 2) DETECTAR 4 ESQUINAS NEGRAS
 # ---------------------------------------------------------
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -60,7 +58,6 @@ def encontrar_cuadrados(img):
     if len(candidatos) < 4:
         return None
 
-    # Orden: arriba-izq, arriba-der, abajo-izq, abajo-der
     candidatos = sorted(candidatos, key=lambda p: p[1])
     top = sorted(candidatos[:2], key=lambda p: p[0])
     bottom = sorted(candidatos[-2:], key=lambda p: p[0])
@@ -76,7 +73,7 @@ def encontrar_cuadrados(img):
     ])
 
 # ---------------------------------------------------------
-# 3) WARP (HOJA ESCANEADA)
+# 3) WARP
 # ---------------------------------------------------------
 def warp_hoja(img, corners):
     dst_w, dst_h = 1000, 1400
@@ -90,16 +87,16 @@ def warp_hoja(img, corners):
     return cv2.warpPerspective(img, M, (dst_w, dst_h))
 
 # ---------------------------------------------------------
-# 4) DETECCIÓN 60 PREGUNTAS (OPTIMIZADO PARA TU PLANTILLA)
+# 4) DETECCIÓN DE 20 PREGUNTAS (TU PLANTILLA REAL)
 # ---------------------------------------------------------
-def detectar_respuestas_60(warped):
+def detectar_respuestas_20(warped):
     h, w = warped.shape[:2]
 
-    # Recorte exacto según tu hoja real
-    y0 = int(h * 0.22)
-    y1 = int(h * 0.90)
-    x0 = int(w * 0.20)
-    x1 = int(w * 0.80)
+    # Recorte calibrado para tu hoja
+    x0 = int(w * 0.12)
+    y0 = int(h * 0.23)
+    x1 = int(w * 0.88)
+    y1 = int(h * 0.87)
 
     zona = warped[y0:y1, x0:x1]
 
@@ -107,67 +104,53 @@ def detectar_respuestas_60(warped):
     blur = cv2.GaussianBlur(gray, (3,3), 0)
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    # Limpieza ruido escáner
     kernel = np.ones((3,3), np.uint8)
     th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel)
 
     filas = 20
-    columnas = 3
     opciones = 4
 
     h_z, w_z = th.shape
     alto_fila = h_z // filas
-    ancho_col = w_z // columnas
+    ancho_op = w_z // opciones
 
     letras = ["A","B","C","D"]
     respuestas = []
 
-    for col in range(columnas):
-        x_c0 = col * ancho_col
-        x_c1 = (col + 1) * ancho_col
-        col_img = th[:, x_c0:x_c1]
+    for fila in range(filas):
+        y0f = fila * alto_fila
+        y1f = (fila + 1) * alto_fila
+        fila_img = th[y0f:y1f, :]
 
-        # quitar zona de números de pregunta
-        margen_izq = int(col_img.shape[1] * 0.28)
-        col_img = col_img[:, margen_izq:]
+        valores = []
+        for o in range(opciones):
+            x0o = o * ancho_op
+            x1o = (o + 1) * ancho_op
+            celda = fila_img[:, x0o:x1o]
 
-        ancho_op = col_img.shape[1] // opciones
+            ch, cw = celda.shape
+            cy0 = int(ch * 0.25)
+            cy1 = int(ch * 0.75)
+            cx0 = int(cw * 0.25)
+            cx1 = int(cw * 0.75)
 
-        for fila in range(filas):
-            y0f = fila * alto_fila
-            y1f = (fila + 1) * alto_fila
-            fila_img = col_img[y0f:y1f, :]
+            centro = celda[cy0:cy1, cx0:cx1]
+            negro = cv2.countNonZero(centro)
+            valores.append(negro)
 
-            valores = []
-            for o in range(opciones):
-                x0o = o * ancho_op
-                x1o = (o + 1) * ancho_op
-                celda = fila_img[:, x0o:x1o]
+        max_val = max(valores)
+        idx = valores.index(max_val)
+        media = np.mean(valores)
 
-                # SOLO centro de la burbuja (clave)
-                ch, cw = celda.shape
-                cy0 = int(ch * 0.3)
-                cy1 = int(ch * 0.7)
-                cx0 = int(cw * 0.3)
-                cx1 = int(cw * 0.7)
-
-                centro = celda[cy0:cy1, cx0:cx1]
-                negro = cv2.countNonZero(centro)
-                valores.append(negro)
-
-            max_val = max(valores)
-            idx = valores.index(max_val)
-            media = np.mean(valores)
-
-            if max_val < media * 1.5:
-                respuestas.append(None)
-            else:
-                respuestas.append(letras[idx])
+        if max_val < media * 1.6:
+            respuestas.append(None)
+        else:
+            respuestas.append(letras[idx])
 
     return respuestas
 
 # ---------------------------------------------------------
-# 5) MAIN (NUNCA CRASHEA)
+# 5) MAIN
 # ---------------------------------------------------------
 def main():
     try:
@@ -182,22 +165,18 @@ def main():
             print(json.dumps({"ok": False, "error": "No se pudo leer la imagen"}))
             return
 
-        # Leer QR (pero NO bloquear si falla)
         codigo, id_examen, id_alumno, fecha_qr = leer_qr(img)
 
-        # Detectar esquinas
         corners = encontrar_cuadrados(img)
 
         if corners is not None:
             warped = warp_hoja(img, corners)
             warp_ok = True
         else:
-            # Fallback para escáner recto
             warped = img.copy()
             warp_ok = False
 
-        # Detectar respuestas (por defecto 60)
-        respuestas = detectar_respuestas_60(warped)
+        respuestas = detectar_respuestas_20(warped)
 
         _, buffer = cv2.imencode(".jpg", warped)
         debug_b64 = base64.b64encode(buffer).decode()
