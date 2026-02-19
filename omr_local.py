@@ -10,7 +10,7 @@ import os
 # ---------------------------------------------------------
 # CONFIGURACIÓN DE RUTA DE DEBUG (ABSOLUTA O RELATIVA)
 # ---------------------------------------------------------
-DEBUG_DIR = "examenes/omr/omr_debug"
+DEBUG_DIR = "/web/rrhhclases/examenes/omr/omr_debug"
 
 # ---------------------------------------------------------
 # 1) LECTURA QR
