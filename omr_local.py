@@ -17,13 +17,28 @@ VALORES_OMR = {
 }
 
 # ---------------------------------------------------------
-# 1) LECTURA QR
+# 1) RECORTE DEDICADO DEL QR (OPCIÓN B)
+# ---------------------------------------------------------
+def recorte_qr(img):
+    h, w = img.shape[:2]
+
+    # Zona superior derecha donde SIEMPRE está el QR
+    x0 = int(w * 0.60)
+    y0 = int(h * 0.00)
+    x1 = int(w * 0.98)
+    y1 = int(h * 0.25)
+
+    return img[y0:y1, x0:x1]
+
+# ---------------------------------------------------------
+# 2) LECTURA QR MEJORADA
 # ---------------------------------------------------------
 def leer_qr(img):
-    codes = zbar_decode(img)
-    if not codes:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        codes = zbar_decode(gray)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
+    blur = cv2.GaussianBlur(gray, (5,5), 0)
+
+    codes = zbar_decode(blur)
     if not codes:
         return None, None, None
 
@@ -37,7 +52,7 @@ def leer_qr(img):
     return id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
-# 2) RECORTE PORCENTUAL (MISMO QUE omr_debur.php)
+# 3) RECORTE PORCENTUAL DE BURBUJAS (MISMO QUE omr_debur.php)
 # ---------------------------------------------------------
 def recortar_porcentual(img, valores):
     h, w = img.shape[:2]
@@ -50,7 +65,7 @@ def recortar_porcentual(img, valores):
     return img[Y0:Y1, X0:X1]
 
 # ---------------------------------------------------------
-# 3) DETECCIÓN DE 20 PREGUNTAS
+# 4) DETECCIÓN DE 20 PREGUNTAS
 # ---------------------------------------------------------
 def detectar_respuestas_20(zona):
     gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
@@ -82,18 +97,17 @@ def detectar_respuestas_20(zona):
             valores.append(negro)
 
         max_val = max(valores)
-        idx = valores.index(max_val)
         media = np.mean(valores)
 
         if max_val < media * 1.5:
             respuestas.append(None)
         else:
-            respuestas.append(letras[idx])
+            respuestas.append(letras[valores.index(max_val)])
 
     return respuestas
 
 # ---------------------------------------------------------
-# 4) MAIN
+# 5) MAIN
 # ---------------------------------------------------------
 def main():
     try:
@@ -108,12 +122,19 @@ def main():
             print(json.dumps({"ok": False, "error": "No se pudo leer la imagen"}))
             return
 
-        id_examen, id_alumno, fecha_qr = leer_qr(img)
+        # 1) Recortar zona del QR
+        qr_zone = recorte_qr(img)
 
+        # 2) Leer QR SOLO en esa zona
+        id_examen, id_alumno, fecha_qr = leer_qr(qr_zone)
+
+        # 3) Recortar zona de burbujas
         zona = recortar_porcentual(img, VALORES_OMR)
 
+        # 4) Detectar respuestas
         respuestas = detectar_respuestas_20(zona)
 
+        # 5) Imagen debug
         _, buffer = cv2.imencode(".jpg", zona)
         debug_b64 = base64.b64encode(buffer).decode()
 
