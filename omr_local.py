@@ -172,7 +172,7 @@ def detectar_respuestas(warped, formato):
 # ---------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"ok": False, "error": "Uso: leer_omr.py <imagen>"}))
+        print(json.dumps({"ok": False, "error": "Uso: omr_local.py <imagen>"}))
         return
 
     ruta = sys.argv[1]
