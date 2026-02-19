@@ -3,164 +3,163 @@ import sys
 import json
 import cv2
 import numpy as np
-import pymysql
 from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
 # ---------------------------------------------------------
-# LEER QR
+# 1) LECTURA QR (TOLERANTE)
 # ---------------------------------------------------------
 def leer_qr(img):
+    # Intento 1: imagen original
     codes = zbar_decode(img)
+
+    # Intento 2: en gris (mucho mejor para escáner)
+    if not codes:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        codes = zbar_decode(gray)
+
     if not codes:
         return None, None, None, None
 
     data = codes[0].data.decode("utf-8").strip()
     partes = data.split("|")
 
-    id_examen = int(partes[0]) if partes[0].isdigit() else None
-    id_alumno = int(partes[1]) if partes[1].isdigit() else None
+    id_examen = int(partes[0]) if len(partes) >= 1 and partes[0].isdigit() else None
+    id_alumno = int(partes[1]) if len(partes) >= 2 and partes[1].isdigit() else None
     fecha_qr  = partes[2] if len(partes) >= 3 else None
 
     return data, id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
-# OBTENER FORMATO DESDE MYSQL
-# ---------------------------------------------------------
-def obtener_formato(id_examen):
-    conn = pymysql.connect(
-        host="localhost",
-        user="TU_USUARIO",
-        password="TU_PASSWORD",
-        database="TU_BD",
-        charset="utf8mb4"
-    )
-    cur = conn.cursor(pymysql.cursors.DictCursor)
-
-    cur.execute("SELECT num_preguntas FROM examenes WHERE id_examen=%s", (id_examen,))
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return None
-
-    preguntas = row["num_preguntas"]
-
-    cur.execute("SELECT * FROM omr_formatos WHERE preguntas=%s", (preguntas,))
-    formato = cur.fetchone()
-
-    conn.close()
-    return formato
-
-# ---------------------------------------------------------
-# DETECTAR CUADRADOS (VERSIÓN ROBUSTA)
+# 2) DETECTAR 4 ESQUINAS NEGRAS (TU PLANTILLA)
 # ---------------------------------------------------------
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
-
-    # Invertir para que los cuadrados negros se vuelvan blancos
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
     contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    candidates = []
+    candidatos = []
+    h, w = gray.shape
+    area_img = h * w
 
     for c in contours:
         area = cv2.contourArea(c)
-
-        # Aceptar cuadrados MUY pequeños y MUY grandes
-        if area < 5 or area > 20000:
+        if area < area_img * 0.0005 or area > area_img * 0.02:
             continue
 
-        # Aproximación permisiva
-        approx = cv2.approxPolyDP(c, 0.05 * cv2.arcLength(c, True), True)
-        if len(approx) != 4:
-            continue
+        approx = cv2.approxPolyDP(c, 0.04 * cv2.arcLength(c, True), True)
+        if len(approx) == 4:
+            x, y, bw, bh = cv2.boundingRect(approx)
+            ratio = bw / float(bh)
+            if 0.7 < ratio < 1.3:
+                cx = x + bw / 2
+                cy = y + bh / 2
+                candidatos.append((cx, cy, approx))
 
-        x, y, w, h = cv2.boundingRect(approx)
-        ratio = w / float(h)
-
-        # Aceptar deformaciones
-        if 0.50 < ratio < 1.50:
-            candidates.append((x, y, approx))
-
-    if len(candidates) < 4:
+    if len(candidatos) < 4:
         return None
 
-    # Ordenar por posición
-    pts = sorted(candidates, key=lambda p: (p[1], p[0]))
+    # Orden: arriba-izq, arriba-der, abajo-izq, abajo-der
+    candidatos = sorted(candidatos, key=lambda p: p[1])
+    top = sorted(candidatos[:2], key=lambda p: p[0])
+    bottom = sorted(candidatos[-2:], key=lambda p: p[0])
 
-    pts_sorted = [
-        pts[0][2].reshape(4,2).mean(axis=0),
-        pts[1][2].reshape(4,2).mean(axis=0),
-        pts[-2][2].reshape(4,2).mean(axis=0),
-        pts[-1][2].reshape(4,2).mean(axis=0)
-    ]
+    def centro(a):
+        return a.reshape(4,2).mean(axis=0)
 
-    return np.float32(pts_sorted)
+    return np.float32([
+        centro(top[0][2]),
+        centro(top[1][2]),
+        centro(bottom[0][2]),
+        centro(bottom[1][2])
+    ])
 
 # ---------------------------------------------------------
-# WARP
+# 3) WARP (HOJA ESCANEADA)
 # ---------------------------------------------------------
 def warp_hoja(img, corners):
-    dst_w, dst_h = 900, 1300
+    dst_w, dst_h = 1000, 1400
     dst = np.float32([
-        [50,50],
-        [dst_w-50,50],
-        [50,dst_h-50],
-        [dst_w-50,dst_h-50]
+        [80, 80],
+        [dst_w-80, 80],
+        [80, dst_h-80],
+        [dst_w-80, dst_h-80]
     ])
     M = cv2.getPerspectiveTransform(corners, dst)
     return cv2.warpPerspective(img, M, (dst_w, dst_h))
 
 # ---------------------------------------------------------
-# DETECTAR BURBUJAS
+# 4) DETECCIÓN 60 PREGUNTAS (OPTIMIZADO PARA TU PLANTILLA)
 # ---------------------------------------------------------
-def detectar_respuestas(warped, formato):
+def detectar_respuestas_60(warped):
     h, w = warped.shape[:2]
 
-    x0 = int(w * formato["x0"])
-    y0 = int(h * formato["y0"])
-    x1 = int(w * formato["x1"])
-    y1 = int(h * formato["y1"])
+    # Recorte exacto según tu hoja real
+    y0 = int(h * 0.22)
+    y1 = int(h * 0.90)
+    x0 = int(w * 0.20)
+    x1 = int(w * 0.80)
 
     zona = warped[y0:y1, x0:x1]
 
     gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV+cv2.THRESH_OTSU)
+    blur = cv2.GaussianBlur(gray, (3,3), 0)
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-    filas = formato["preguntas"]
-    columnas = formato["columnas"]
-    opciones = formato["opciones"]
+    # Limpieza ruido escáner
+    kernel = np.ones((3,3), np.uint8)
+    th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel)
+
+    filas = 20
+    columnas = 3
+    opciones = 4
 
     h_z, w_z = th.shape
     alto_fila = h_z // filas
-    ancho_columna = w_z // columnas
-    ancho_opcion = ancho_columna // opciones
+    ancho_col = w_z // columnas
 
     letras = ["A","B","C","D"]
     respuestas = []
 
     for col in range(columnas):
-        x_col0 = col * ancho_columna
+        x_c0 = col * ancho_col
+        x_c1 = (col + 1) * ancho_col
+        col_img = th[:, x_c0:x_c1]
 
-        for fila in range(filas // columnas):
-            y_f0 = fila * alto_fila
+        # quitar zona de números de pregunta
+        margen_izq = int(col_img.shape[1] * 0.28)
+        col_img = col_img[:, margen_izq:]
 
-            fila_img = th[y_f0:y_f0+alto_fila, x_col0:x_col0+ancho_columna]
+        ancho_op = col_img.shape[1] // opciones
+
+        for fila in range(filas):
+            y0f = fila * alto_fila
+            y1f = (fila + 1) * alto_fila
+            fila_img = col_img[y0f:y1f, :]
 
             valores = []
             for o in range(opciones):
-                x_o0 = o * ancho_opcion
-                celda = fila_img[:, x_o0:x_o0+ancho_opcion]
-                negro = cv2.countNonZero(celda)
+                x0o = o * ancho_op
+                x1o = (o + 1) * ancho_op
+                celda = fila_img[:, x0o:x1o]
+
+                # SOLO centro de la burbuja (clave)
+                ch, cw = celda.shape
+                cy0 = int(ch * 0.3)
+                cy1 = int(ch * 0.7)
+                cx0 = int(cw * 0.3)
+                cx1 = int(cw * 0.7)
+
+                centro = celda[cy0:cy1, cx0:cx1]
+                negro = cv2.countNonZero(centro)
                 valores.append(negro)
 
             max_val = max(valores)
             idx = valores.index(max_val)
+            media = np.mean(valores)
 
-            if max_val < 20:
+            if max_val < media * 1.5:
                 respuestas.append(None)
             else:
                 respuestas.append(letras[idx])
@@ -168,58 +167,61 @@ def detectar_respuestas(warped, formato):
     return respuestas
 
 # ---------------------------------------------------------
-# MAIN
+# 5) MAIN (NUNCA CRASHEA)
 # ---------------------------------------------------------
 def main():
-    if len(sys.argv) < 2:
-        print(json.dumps({"ok": False, "error": "Uso: omr_local.py <imagen>"}))
-        return
+    try:
+        if len(sys.argv) < 2:
+            print(json.dumps({"ok": False, "error": "Uso: omr_local.py <imagen>"}))
+            return
 
-    ruta = sys.argv[1]
-    img = cv2.imread(ruta)
-    if img is None:
-        print(json.dumps({"ok": False, "error": "No se pudo leer la imagen"}))
-        return
+        ruta = sys.argv[1]
+        img = cv2.imread(ruta)
 
-    # 1) LEER QR
-    codigo, id_examen, id_alumno, fecha_qr = leer_qr(img)
-    if id_examen is None:
-        print(json.dumps({"ok": False, "error": "No se pudo leer el QR"}))
-        return
+        if img is None:
+            print(json.dumps({"ok": False, "error": "No se pudo leer la imagen"}))
+            return
 
-    # 2) FORMATO
-    formato = obtener_formato(id_examen)
-    if formato is None:
-        print(json.dumps({"ok": False, "error": "No existe formato para este examen"}))
-        return
+        # Leer QR (pero NO bloquear si falla)
+        codigo, id_examen, id_alumno, fecha_qr = leer_qr(img)
 
-    # 3) DETECTAR CUADRADOS
-    corners = encontrar_cuadrados(img)
-    if corners is None:
-        print(json.dumps({"ok": False, "error": "No se detectaron los 4 cuadrados"}))
-        return
+        # Detectar esquinas
+        corners = encontrar_cuadrados(img)
 
-    # 4) WARP
-    warped = warp_hoja(img, corners)
+        if corners is not None:
+            warped = warp_hoja(img, corners)
+            warp_ok = True
+        else:
+            # Fallback para escáner recto
+            warped = img.copy()
+            warp_ok = False
 
-    # 5) RESPUESTAS
-    respuestas = detectar_respuestas(warped, formato)
+        # Detectar respuestas (por defecto 60)
+        respuestas = detectar_respuestas_60(warped)
 
-    # 6) DEBUG IMAGE
-    _, buffer = cv2.imencode(".jpg", warped)
-    debug_b64 = base64.b64encode(buffer).decode()
+        _, buffer = cv2.imencode(".jpg", warped)
+        debug_b64 = base64.b64encode(buffer).decode()
 
-    out = {
-        "ok": True,
-        "codigo": codigo,
-        "id_examen": id_examen,
-        "id_alumno": id_alumno,
-        "fecha_qr": fecha_qr,
-        "respuestas": respuestas,
-        "warp_ok": True,
-        "debug_image": debug_b64
-    }
-    print(json.dumps(out))
+        out = {
+            "ok": True,
+            "codigo": codigo,
+            "id_examen": id_examen,
+            "id_alumno": id_alumno,
+            "fecha_qr": fecha_qr,
+            "respuestas": respuestas,
+            "warp_ok": warp_ok,
+            "debug_image": debug_b64
+        }
+
+        print(json.dumps(out))
+
+    except Exception as e:
+        import traceback
+        print(json.dumps({
+            "ok": False,
+            "error": str(e),
+            "trace": traceback.format_exc()
+        }))
 
 if __name__ == "__main__":
     main()
