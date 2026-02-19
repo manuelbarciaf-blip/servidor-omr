@@ -59,28 +59,37 @@ def obtener_formato(id_examen):
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5,5), 0)
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+
+    # Invertir para que los cuadrados negros se vuelvan blancos
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
     contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     candidates = []
 
     for c in contours:
         area = cv2.contourArea(c)
-        if area < 20 or area > 5000:
+
+        # Aceptar cuadrados MUCHO más pequeños y más grandes
+        if area < 5 or area > 20000:
             continue
 
-        approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
+        # Aproximación más permisiva
+        approx = cv2.approxPolyDP(c, 0.05 * cv2.arcLength(c, True), True)
         if len(approx) != 4:
             continue
 
         x, y, w, h = cv2.boundingRect(approx)
         ratio = w / float(h)
-        if 0.70 < ratio < 1.30:
+
+        # Aceptar deformaciones por perspectiva
+        if 0.50 < ratio < 1.50:
             candidates.append((x, y, approx))
 
     if len(candidates) < 4:
         return None
 
+    # Ordenar por posición (arriba-izquierda, arriba-derecha, abajo-izquierda, abajo-derecha)
     pts = sorted(candidates, key=lambda p: (p[1], p[0]))
 
     pts_sorted = [
@@ -91,18 +100,6 @@ def encontrar_cuadrados(img):
     ]
 
     return np.float32(pts_sorted)
-
-def warp_hoja(img, corners):
-    dst_w, dst_h = 900, 1300
-    dst = np.float32([
-        [50,50],
-        [dst_w-50,50],
-        [50,dst_h-50],
-        [dst_w-50,dst_h-50]
-    ])
-    M = cv2.getPerspectiveTransform(corners, dst)
-    return cv2.warpPerspective(img, M, (dst_w, dst_h))
-
 # ---------------------------------------------------------
 # DETECTAR BURBUJAS SEGÚN FORMATO
 # ---------------------------------------------------------
