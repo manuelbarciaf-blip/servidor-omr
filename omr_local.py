@@ -154,19 +154,16 @@ def detectar_respuestas_60(warped):
 
     for col in range(columnas):
         x_col0 = col * ancho_columna
-        x_col1 = (col+1) * ancho_columna
 
         for fila in range(filas):
             y_f0 = fila * alto_fila
-            y_f1 = (fila+1) * alto_fila
 
-            fila_img = th[y_f0:y_f1, x_col0:x_col1]
+            fila_img = th[y_f0:y_f0+alto_fila, x_col0:x_col0+ancho_columna]
 
             valores = []
             for o in range(opciones):
                 x_o0 = o * ancho_opcion
-                x_o1 = (o+1) * ancho_opcion
-                celda = fila_img[:, x_o0:x_o1]
+                celda = fila_img[:, x_o0:x_o0+ancho_opcion]
                 negro = cv2.countNonZero(celda)
                 valores.append(negro)
 
