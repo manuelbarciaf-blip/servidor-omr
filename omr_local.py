@@ -8,6 +8,11 @@ import base64
 import os
 
 # ---------------------------------------------------------
+# CONFIGURACIÓN DE RUTA DE DEBUG (ABSOLUTA O RELATIVA)
+# ---------------------------------------------------------
+DEBUG_DIR = "examenes/omr/omr_debug"
+
+# ---------------------------------------------------------
 # 1) LECTURA QR
 # ---------------------------------------------------------
 def leer_qr(img):
@@ -87,7 +92,7 @@ def warp_hoja(img, corners):
 # ---------------------------------------------------------
 # 4) DETECCIÓN 20 PREGUNTAS + SUPER DEBUG
 # ---------------------------------------------------------
-def detectar_respuestas_20(warped, debug_dir="omr_debug"):
+def detectar_respuestas_20(warped, debug_dir=DEBUG_DIR):
     os.makedirs(debug_dir, exist_ok=True)
 
     debug_txt = open(os.path.join(debug_dir, "debug.txt"), "w")
@@ -202,10 +207,10 @@ def main():
             warped = img.copy()
             warp_ok = False
 
-        os.makedirs("omr_debug", exist_ok=True)
-        cv2.imwrite("omr_debug/warp.jpg", warped)
+        os.makedirs(DEBUG_DIR, exist_ok=True)
+        cv2.imwrite(os.path.join(DEBUG_DIR, "warp.jpg"), warped)
 
-        respuestas = detectar_respuestas_20(warped, debug_dir="omr_debug")
+        respuestas = detectar_respuestas_20(warped, debug_dir=DEBUG_DIR)
 
         _, buffer = cv2.imencode(".jpg", warped)
         debug_b64 = base64.b64encode(buffer).decode()
