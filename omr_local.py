@@ -37,7 +37,6 @@ def obtener_formato(id_examen):
     )
     cur = conn.cursor(pymysql.cursors.DictCursor)
 
-    # 1) Obtener número de preguntas del examen
     cur.execute("SELECT num_preguntas FROM examenes WHERE id_examen=%s", (id_examen,))
     row = cur.fetchone()
     if not row:
@@ -46,7 +45,6 @@ def obtener_formato(id_examen):
 
     preguntas = row["num_preguntas"]
 
-    # 2) Obtener formato por número de preguntas
     cur.execute("SELECT * FROM omr_formatos WHERE preguntas=%s", (preguntas,))
     formato = cur.fetchone()
 
@@ -54,7 +52,7 @@ def obtener_formato(id_examen):
     return formato
 
 # ---------------------------------------------------------
-# DETECTAR CUADRADOS
+# DETECTAR CUADRADOS (VERSIÓN ROBUSTA)
 # ---------------------------------------------------------
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -70,11 +68,11 @@ def encontrar_cuadrados(img):
     for c in contours:
         area = cv2.contourArea(c)
 
-        # Aceptar cuadrados MUCHO más pequeños y más grandes
+        # Aceptar cuadrados MUY pequeños y MUY grandes
         if area < 5 or area > 20000:
             continue
 
-        # Aproximación más permisiva
+        # Aproximación permisiva
         approx = cv2.approxPolyDP(c, 0.05 * cv2.arcLength(c, True), True)
         if len(approx) != 4:
             continue
@@ -82,14 +80,14 @@ def encontrar_cuadrados(img):
         x, y, w, h = cv2.boundingRect(approx)
         ratio = w / float(h)
 
-        # Aceptar deformaciones por perspectiva
+        # Aceptar deformaciones
         if 0.50 < ratio < 1.50:
             candidates.append((x, y, approx))
 
     if len(candidates) < 4:
         return None
 
-    # Ordenar por posición (arriba-izquierda, arriba-derecha, abajo-izquierda, abajo-derecha)
+    # Ordenar por posición
     pts = sorted(candidates, key=lambda p: (p[1], p[0]))
 
     pts_sorted = [
@@ -100,8 +98,23 @@ def encontrar_cuadrados(img):
     ]
 
     return np.float32(pts_sorted)
+
 # ---------------------------------------------------------
-# DETECTAR BURBUJAS SEGÚN FORMATO
+# WARP
+# ---------------------------------------------------------
+def warp_hoja(img, corners):
+    dst_w, dst_h = 900, 1300
+    dst = np.float32([
+        [50,50],
+        [dst_w-50,50],
+        [50,dst_h-50],
+        [dst_w-50,dst_h-50]
+    ])
+    M = cv2.getPerspectiveTransform(corners, dst)
+    return cv2.warpPerspective(img, M, (dst_w, dst_h))
+
+# ---------------------------------------------------------
+# DETECTAR BURBUJAS
 # ---------------------------------------------------------
 def detectar_respuestas(warped, formato):
     h, w = warped.shape[:2]
@@ -159,7 +172,7 @@ def detectar_respuestas(warped, formato):
 # ---------------------------------------------------------
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"ok": False, "error": "Uso: omr_local.py <imagen>"}))
+        print(json.dumps({"ok": False, "error": "Uso: leer_omr.py <imagen>"}))
         return
 
     ruta = sys.argv[1]
@@ -168,23 +181,31 @@ def main():
         print(json.dumps({"ok": False, "error": "No se pudo leer la imagen"}))
         return
 
+    # 1) LEER QR
     codigo, id_examen, id_alumno, fecha_qr = leer_qr(img)
-
-    formato = obtener_formato(id_examen)
-    if formato is None:
-        print(json.dumps({"ok": False, "error": "No existe formato para este número de preguntas"}))
+    if id_examen is None:
+        print(json.dumps({"ok": False, "error": "No se pudo leer el QR"}))
         return
 
+    # 2) FORMATO
+    formato = obtener_formato(id_examen)
+    if formato is None:
+        print(json.dumps({"ok": False, "error": "No existe formato para este examen"}))
+        return
+
+    # 3) DETECTAR CUADRADOS
     corners = encontrar_cuadrados(img)
     if corners is None:
-        warped = img.copy()
-        warped_ok = False
-    else:
-        warped = warp_hoja(img, corners)
-        warped_ok = True
+        print(json.dumps({"ok": False, "error": "No se detectaron los 4 cuadrados"}))
+        return
 
+    # 4) WARP
+    warped = warp_hoja(img, corners)
+
+    # 5) RESPUESTAS
     respuestas = detectar_respuestas(warped, formato)
 
+    # 6) DEBUG IMAGE
     _, buffer = cv2.imencode(".jpg", warped)
     debug_b64 = base64.b64encode(buffer).decode()
 
@@ -195,7 +216,7 @@ def main():
         "id_alumno": id_alumno,
         "fecha_qr": fecha_qr,
         "respuestas": respuestas,
-        "warp_ok": warped_ok,
+        "warp_ok": True,
         "debug_image": debug_b64
     }
     print(json.dumps(out))
