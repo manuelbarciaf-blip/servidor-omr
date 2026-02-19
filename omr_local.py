@@ -5,17 +5,16 @@ import cv2
 import numpy as np
 from pyzbar.pyzbar import decode as zbar_decode
 import base64
+import os
 
 # ---------------------------------------------------------
-# 1) LECTURA QR (ROBUSTA)
+# 1) LECTURA QR
 # ---------------------------------------------------------
 def leer_qr(img):
     codes = zbar_decode(img)
-
     if not codes:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         codes = zbar_decode(gray)
-
     if not codes:
         return None, None, None, None
 
@@ -29,12 +28,11 @@ def leer_qr(img):
     return data, id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
-# 2) DETECTAR 4 ESQUINAS NEGRAS
+# 2) DETECTAR ESQUINAS
 # ---------------------------------------------------------
 def encontrar_cuadrados(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
     contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     candidatos = []
@@ -87,18 +85,20 @@ def warp_hoja(img, corners):
     return cv2.warpPerspective(img, M, (dst_w, dst_h))
 
 # ---------------------------------------------------------
-# 4) DETECCIÓN DE 20 PREGUNTAS (TU PLANTILLA REAL)
+# 4) DETECCIÓN 20 PREGUNTAS + SUPER DEBUG
 # ---------------------------------------------------------
-def detectar_respuestas_20(warped):
+def detectar_respuestas_20(warped, debug_dir="omr_debug"):
+    os.makedirs(debug_dir, exist_ok=True)
+
     h, w = warped.shape[:2]
 
-    # Recorte calibrado para tu hoja
     x0 = int(w * 0.12)
     y0 = int(h * 0.23)
     x1 = int(w * 0.88)
     y1 = int(h * 0.87)
 
     zona = warped[y0:y1, x0:x1]
+    cv2.imwrite(os.path.join(debug_dir, "zona_respuestas.jpg"), zona)
 
     gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3,3), 0)
@@ -120,7 +120,8 @@ def detectar_respuestas_20(warped):
     for fila in range(filas):
         y0f = fila * alto_fila
         y1f = (fila + 1) * alto_fila
-        fila_img = th[y0f:y1f, :]
+        fila_img = th[y0f:y1f, :].copy()
+        fila_color = cv2.cvtColor(fila_img, cv2.COLOR_GRAY2BGR)
 
         valores = []
         for o in range(opciones):
@@ -138,14 +139,35 @@ def detectar_respuestas_20(warped):
             negro = cv2.countNonZero(centro)
             valores.append(negro)
 
+            # guardar imagen de cada opción
+            op_path = os.path.join(
+                debug_dir,
+                f"fila_{fila+1:02d}_op_{o+1}_{letras[o]}.jpg"
+            )
+            cv2.imwrite(op_path, celda)
+
         max_val = max(valores)
         idx = valores.index(max_val)
         media = np.mean(valores)
 
+        print(f"Fila {fila+1:02d}: valores={valores}, max={max_val}, media={media:.2f}, elegido={letras[idx]}")
+
         if max_val < media * 1.6:
             respuestas.append(None)
+            elegido = None
         else:
             respuestas.append(letras[idx])
+            elegido = idx
+
+        # dibujar debug en la fila
+        for o in range(opciones):
+            x0o = o * ancho_op
+            x1o = (o + 1) * ancho_op
+            color = (0,255,0) if o == elegido else (0,0,255)
+            cv2.rectangle(fila_color, (x0o, 0), (x1o, alto_fila-1), color, 1)
+
+        fila_path = os.path.join(debug_dir, f"fila_{fila+1:02d}_debug.jpg")
+        cv2.imwrite(fila_path, fila_color)
 
     return respuestas
 
@@ -176,7 +198,10 @@ def main():
             warped = img.copy()
             warp_ok = False
 
-        respuestas = detectar_respuestas_20(warped)
+        os.makedirs("omr_debug", exist_ok=True)
+        cv2.imwrite("omr_debug/warp.jpg", warped)
+
+        respuestas = detectar_respuestas_20(warped, debug_dir="omr_debug")
 
         _, buffer = cv2.imencode(".jpg", warped)
         debug_b64 = base64.b64encode(buffer).decode()
