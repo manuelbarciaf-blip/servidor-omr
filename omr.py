@@ -3,6 +3,9 @@ import numpy as np
 from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
+# ---------------------------------------------------------
+# VALORES OMR DEFINIDOS POR MANUEL
+# ---------------------------------------------------------
 VALORES_OMR = {
     "x0": 0.25,
     "y0": 0.26,
@@ -10,6 +13,9 @@ VALORES_OMR = {
     "y1": 0.77
 }
 
+# ---------------------------------------------------------
+# RECORTE DEDICADO DEL QR
+# ---------------------------------------------------------
 def recorte_qr(img):
     h, w = img.shape[:2]
     x0 = int(w * 0.60)
@@ -18,6 +24,9 @@ def recorte_qr(img):
     y1 = int(h * 0.25)
     return img[y0:y1, x0:x1]
 
+# ---------------------------------------------------------
+# LECTURA QR MEJORADA
+# ---------------------------------------------------------
 def leer_qr(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
@@ -36,6 +45,9 @@ def leer_qr(img):
 
     return id_examen, id_alumno, fecha_qr
 
+# ---------------------------------------------------------
+# RECORTE PORCENTUAL DE BURBUJAS
+# ---------------------------------------------------------
 def recortar_porcentual(img, valores):
     h, w = img.shape[:2]
     X0 = int(w * valores["x0"])
@@ -44,6 +56,9 @@ def recortar_porcentual(img, valores):
     Y1 = int(h * valores["y1"])
     return img[Y0:Y1, X0:X1]
 
+# ---------------------------------------------------------
+# DETECCIÓN DE 20 PREGUNTAS
+# ---------------------------------------------------------
 def detectar_respuestas_20(zona):
     gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (3,3), 0)
@@ -82,6 +97,9 @@ def detectar_respuestas_20(zona):
 
     return respuestas
 
+# ---------------------------------------------------------
+# PROCESAR IMAGEN COMPLETA
+# ---------------------------------------------------------
 def procesar_omr(binario):
     img_array = np.frombuffer(binario, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
@@ -89,12 +107,19 @@ def procesar_omr(binario):
     if img is None:
         return {"ok": False, "error": "No se pudo decodificar la imagen"}
 
+    # --- Recorte del QR ---
     qr_zone = recorte_qr(img)
     id_examen, id_alumno, fecha_qr = leer_qr(qr_zone)
 
+    # --- DEBUG DEL QR ---
+    _, qr_buf = cv2.imencode(".jpg", qr_zone)
+    qr_debug = base64.b64encode(qr_buf).decode()
+
+    # --- Recorte de burbujas ---
     zona = recortar_porcentual(img, VALORES_OMR)
     respuestas = detectar_respuestas_20(zona)
 
+    # --- Debug de burbujas ---
     _, buffer = cv2.imencode(".jpg", zona)
     debug_b64 = base64.b64encode(buffer).decode()
 
@@ -105,5 +130,6 @@ def procesar_omr(binario):
         "id_alumno": id_alumno,
         "fecha_qr": fecha_qr,
         "respuestas": respuestas,
-        "debug_image": debug_b64
+        "debug_image": debug_b64,
+        "qr_debug": qr_debug
     }
