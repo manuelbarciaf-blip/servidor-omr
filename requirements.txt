@@ -1,7 +1,7 @@
-web3==6.15.1
-requests==2.31.0
+fastapi
+uvicorn
 opencv-python-headless
 numpy
 pyzbar
-
+Pillow
 
