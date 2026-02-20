@@ -14,25 +14,16 @@ VALORES_OMR = {
 }
 
 # ---------------------------------------------------------
-# RECORTE DEDICADO DEL QR
-# ---------------------------------------------------------
-def recorte_qr(img):
-    h, w = img.shape[:2]
-    x0 = int(w * 0.60)
-    y0 = int(h * 0.00)
-    x1 = int(w * 0.98)
-    y1 = int(h * 0.25)
-    return img[y0:y1, x0:x1]
-
-# ---------------------------------------------------------
-# LECTURA QR MEJORADA
+# LECTURA QR EN TODA LA IMAGEN (RECOMENDADO)
 # ---------------------------------------------------------
 def leer_qr(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
     blur = cv2.GaussianBlur(gray, (5,5), 0)
 
+    # Buscar QR en toda la imagen
     codes = zbar_decode(blur)
+
     if not codes:
         return None, None, None
 
@@ -107,12 +98,11 @@ def procesar_omr(binario):
     if img is None:
         return {"ok": False, "error": "No se pudo decodificar la imagen"}
 
-    # --- Recorte del QR ---
-    qr_zone = recorte_qr(img)
-    id_examen, id_alumno, fecha_qr = leer_qr(qr_zone)
+    # --- LECTURA QR EN TODA LA IMAGEN ---
+    id_examen, id_alumno, fecha_qr = leer_qr(img)
 
-    # --- DEBUG DEL QR ---
-    _, qr_buf = cv2.imencode(".jpg", qr_zone)
+    # --- DEBUG QR (imagen completa) ---
+    _, qr_buf = cv2.imencode(".jpg", img)
     qr_debug = base64.b64encode(qr_buf).decode()
 
     # --- Recorte de burbujas ---
