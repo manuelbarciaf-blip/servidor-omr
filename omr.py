@@ -145,7 +145,7 @@ def procesar_omr(binario):
     # Corregir inclinación
     th_corr = corregir_inclinacion(th)
 
-    # Leer QR en imagen original (mejor)
+    # Leer QR DESPUÉS de normalizar
     id_examen, id_alumno, fecha_qr = leer_qr(img_norm)
 
     # Recorte de burbujas
@@ -167,4 +167,3 @@ def procesar_omr(binario):
         "respuestas": respuestas,
         "debug_image": debug_b64
     }
-
