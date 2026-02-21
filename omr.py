@@ -14,16 +14,58 @@ VALORES_OMR = {
 }
 
 # ---------------------------------------------------------
-# LECTURA QR EN TODA LA IMAGEN (RECOMENDADO)
+# NORMALIZACIÓN DE IMAGEN (MEJORA CRÍTICA)
+# ---------------------------------------------------------
+def normalizar_imagen(img):
+    # Escalar a tamaño estándar (A4 aprox)
+    img = cv2.resize(img, (2480, 3508))
+
+    # Convertir a gris
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Aumentar contraste
+    gray = cv2.equalizeHist(gray)
+
+    # Suavizar ruido
+    gray = cv2.GaussianBlur(gray, (5,5), 0)
+
+    # Binarización adaptativa (mucho mejor que Otsu solo)
+    th = cv2.adaptiveThreshold(
+        gray, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        35, 10
+    )
+
+    return th, img
+
+# ---------------------------------------------------------
+# CORRECCIÓN DE INCLINACIÓN (DESKEW)
+# ---------------------------------------------------------
+def corregir_inclinacion(th):
+    coords = np.column_stack(np.where(th > 0))
+    angle = cv2.minAreaRect(coords)[-1]
+
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+
+    (h, w) = th.shape
+    M = cv2.getRotationMatrix2D((w//2, h//2), angle, 1.0)
+    th_corr = cv2.warpAffine(th, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+
+    return th_corr
+
+# ---------------------------------------------------------
+# LECTURA QR EN TODA LA IMAGEN
 # ---------------------------------------------------------
 def leer_qr(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
     blur = cv2.GaussianBlur(gray, (5,5), 0)
 
-    # Buscar QR en toda la imagen
     codes = zbar_decode(blur)
-
     if not codes:
         return None, None, None
 
@@ -48,17 +90,13 @@ def recortar_porcentual(img, valores):
     return img[Y0:Y1, X0:X1]
 
 # ---------------------------------------------------------
-# DETECCIÓN DE 20 PREGUNTAS
+# DETECCIÓN ROBUSTA DE 20 PREGUNTAS
 # ---------------------------------------------------------
-def detectar_respuestas_20(zona):
-    gray = cv2.cvtColor(zona, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (3,3), 0)
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
+def detectar_respuestas_20(zona_bin):
     filas = 20
     opciones = 4
 
-    h, w = th.shape
+    h, w = zona_bin.shape
     alto_fila = h // filas
     ancho_op = w // opciones
 
@@ -68,20 +106,23 @@ def detectar_respuestas_20(zona):
     for fila in range(filas):
         y0 = fila * alto_fila
         y1 = (fila + 1) * alto_fila
-        fila_img = th[y0:y1, :]
+        fila_img = zona_bin[y0:y1, :]
 
         valores = []
         for o in range(opciones):
             x0 = o * ancho_op
             x1 = (o + 1) * ancho_op
             celda = fila_img[:, x0:x1]
-            negro = cv2.countNonZero(celda)
-            valores.append(negro)
+
+            # Contar píxeles negros
+            negros = cv2.countNonZero(celda)
+            valores.append(negros)
 
         max_val = max(valores)
         media = np.mean(valores)
 
-        if max_val < media * 1.5:
+        # Mucho más tolerante
+        if max_val < media * 1.25:
             respuestas.append(None)
         else:
             respuestas.append(letras[valores.index(max_val)])
@@ -98,18 +139,22 @@ def procesar_omr(binario):
     if img is None:
         return {"ok": False, "error": "No se pudo decodificar la imagen"}
 
-    # --- LECTURA QR EN TODA LA IMAGEN ---
-    id_examen, id_alumno, fecha_qr = leer_qr(img)
+    # Normalizar imagen
+    th, img_norm = normalizar_imagen(img)
 
-    # --- DEBUG QR (imagen completa) ---
-    _, qr_buf = cv2.imencode(".jpg", img)
-    qr_debug = base64.b64encode(qr_buf).decode()
+    # Corregir inclinación
+    th_corr = corregir_inclinacion(th)
 
-    # --- Recorte de burbujas ---
-    zona = recortar_porcentual(img, VALORES_OMR)
+    # Leer QR en imagen original (mejor)
+    id_examen, id_alumno, fecha_qr = leer_qr(img_norm)
+
+    # Recorte de burbujas
+    zona = recortar_porcentual(th_corr, VALORES_OMR)
+
+    # Detectar respuestas
     respuestas = detectar_respuestas_20(zona)
 
-    # --- Debug de burbujas ---
+    # Debug
     _, buffer = cv2.imencode(".jpg", zona)
     debug_b64 = base64.b64encode(buffer).decode()
 
@@ -120,6 +165,6 @@ def procesar_omr(binario):
         "id_alumno": id_alumno,
         "fecha_qr": fecha_qr,
         "respuestas": respuestas,
-        "debug_image": debug_b64,
-        "qr_debug": qr_debug
+        "debug_image": debug_b64
     }
+
