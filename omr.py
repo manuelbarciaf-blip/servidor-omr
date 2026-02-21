@@ -95,7 +95,6 @@ def detectar_respuestas_20(zona_bin, zona_color):
 
     letras = ["A","B","C","D"]
     respuestas = []
-
     mapa = zona_color.copy()
 
     for fila in range(filas):
@@ -120,37 +119,35 @@ def detectar_respuestas_20(zona_bin, zona_color):
         segundo = ordenados[1]
         media = np.mean(valores)
 
-        # Caso 1: vacía
-        if max_val < media * 1.25:
+        # 1) Vacía (umbral absoluto)
+        if max_val < 150:
             respuestas.append(None)
             for (x0,y0,x1,y1) in coords:
                 cv2.rectangle(mapa, (x0,y0), (x1,y1), (255,255,255), 2)
             continue
 
-        # Caso 2: marca muy débil
-        if max_val < media * 1.60:
+        # 2) Doble marca
+        if segundo > max_val * 0.70:
+            respuestas.append("X")
+            for (x0,y0,x1,y1) in coords:
+                cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,0,255), 2)
+            continue
+
+        # 3) Marca débil
+        if max_val < media * 1.10:
             respuestas.append("?")
             idx = valores.index(max_val)
             x0,y0,x1,y1 = coords[idx]
-            cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,255,255), 3)  # amarillo
+            cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,255,255), 3)
             continue
 
-        # Caso 3: doble marca
-        if segundo > max_val * 0.75:
-            respuestas.append("X")
-            for (x0,y0,x1,y1) in coords:
-                cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,0,255), 2)  # rojo
-            continue
-
-        # Caso 4: una sola marca clara
+        # 4) Marca clara
         idx = valores.index(max_val)
         respuestas.append(letras[idx])
-
         x0,y0,x1,y1 = coords[idx]
-        cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,255,0), 3)  # verde
+        cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,255,0), 3)
 
     return respuestas, mapa
-
 # ---------------------------------------------------------
 # PROCESAR IMAGEN COMPLETA
 # ---------------------------------------------------------
