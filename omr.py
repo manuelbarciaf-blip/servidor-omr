@@ -7,10 +7,10 @@ import base64
 # VALORES OMR DEFINIDOS POR MANUEL
 # ---------------------------------------------------------
 VALORES_OMR = {
-    "x0": 0.14,
-    "y0": 0.17,
-    "x1": 0.74,
-    "y1": 0.86,
+    "x0": 0.25,
+    "y0": 0.26,
+    "x1": 0.40,
+    "y1": 0.77
 }
 
 # ---------------------------------------------------------
@@ -58,7 +58,7 @@ def corregir_inclinacion(th):
     return th_corr
 
 # ---------------------------------------------------------
-# LECTURA QR EN TODA LA IMAGEN
+# LECTURA QR EN TODA LA IMAGEN (DESPUÉS DE NORMALIZAR)
 # ---------------------------------------------------------
 def leer_qr(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -76,7 +76,7 @@ def leer_qr(img):
     id_alumno = int(partes[1]) if len(partes) >= 2 and partes[1].isdigit() else None
     fecha_qr  = partes[2] if len(partes) >= 3 else None
 
-    return id_examen, id_alumno, fecha_qr = leer_qr(cv2.cvtColor(th_corr, cv2.COLOR_GRAY2BGR))
+    return id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
 # RECORTE PORCENTUAL DE BURBUJAS
@@ -90,7 +90,7 @@ def recortar_porcentual(img, valores):
     return img[Y0:Y1, X0:X1]
 
 # ---------------------------------------------------------
-# DETECCIÓN ROBUSTA DE 20 PREGUNTAS
+# DETECCIÓN ROBUSTA DE 20 PREGUNTAS + DOBLE MARCA
 # ---------------------------------------------------------
 def detectar_respuestas_20(zona_bin):
     filas = 20
@@ -114,18 +114,27 @@ def detectar_respuestas_20(zona_bin):
             x1 = (o + 1) * ancho_op
             celda = fila_img[:, x0:x1]
 
-            # Contar píxeles negros
             negros = cv2.countNonZero(celda)
             valores.append(negros)
 
-        max_val = max(valores)
+        # Ordenar valores para detectar doble marca
+        ordenados = sorted(valores, reverse=True)
+        max_val = ordenados[0]
+        segundo = ordenados[1]
         media = np.mean(valores)
 
-        # Mucho más tolerante
+        # Caso 1: ninguna marca clara
         if max_val < media * 1.25:
             respuestas.append(None)
-        else:
-            respuestas.append(letras[valores.index(max_val)])
+            continue
+
+        # Caso 2: doble marca
+        if segundo > max_val * 0.75:
+            respuestas.append("X")
+            continue
+
+        # Caso 3: una sola marca válida
+        respuestas.append(letras[valores.index(max_val)])
 
     return respuestas
 
@@ -145,7 +154,7 @@ def procesar_omr(binario):
     # Corregir inclinación
     th_corr = corregir_inclinacion(th)
 
-    # Leer QR DESPUÉS de normalizar
+    # Leer QR DESPUÉS de normalizar y deskew
     id_examen, id_alumno, fecha_qr = leer_qr(img_norm)
 
     # Recorte de burbujas
