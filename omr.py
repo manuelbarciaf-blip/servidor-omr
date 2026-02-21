@@ -76,7 +76,7 @@ def leer_qr(img):
     id_alumno = int(partes[1]) if len(partes) >= 2 and partes[1].isdigit() else None
     fecha_qr  = partes[2] if len(partes) >= 3 else None
 
-    return id_examen, id_alumno, fecha_qr
+    return id_examen, id_alumno, fecha_qr = leer_qr(cv2.cvtColor(th_corr, cv2.COLOR_GRAY2BGR))
 
 # ---------------------------------------------------------
 # RECORTE PORCENTUAL DE BURBUJAS
