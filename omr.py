@@ -45,14 +45,19 @@ def leer_qr_original(img):
 def normalizar_imagen(img):
     img = cv2.resize(img, (2480, 3508))
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Mejor contraste
     gray = cv2.equalizeHist(gray)
+
+    # Suavizado
     gray = cv2.GaussianBlur(gray, (5,5), 0)
 
+    # Binarización más estable
     th = cv2.adaptiveThreshold(
         gray, 255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
-        35, 10
+        31, 8
     )
     return th, img
 
@@ -119,22 +124,22 @@ def detectar_respuestas_20(zona_bin, zona_color):
         segundo = ordenados[1]
         media = np.mean(valores)
 
-        # 1) Vacía (umbral absoluto)
-        if max_val < 150:
+        # 1) Vacía (umbral más bajo)
+        if max_val < 80:
             respuestas.append(None)
             for (x0,y0,x1,y1) in coords:
                 cv2.rectangle(mapa, (x0,y0), (x1,y1), (255,255,255), 2)
             continue
 
         # 2) Doble marca
-        if segundo > max_val * 0.70:
+        if segundo > max_val * 0.65:
             respuestas.append("X")
             for (x0,y0,x1,y1) in coords:
                 cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,0,255), 2)
             continue
 
-        # 3) Marca débil
-        if max_val < media * 1.10:
+        # 3) Marca débil (más permisivo)
+        if max_val < media * 1.05:
             respuestas.append("?")
             idx = valores.index(max_val)
             x0,y0,x1,y1 = coords[idx]
@@ -148,6 +153,7 @@ def detectar_respuestas_20(zona_bin, zona_color):
         cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,255,0), 3)
 
     return respuestas, mapa
+
 # ---------------------------------------------------------
 # PROCESAR IMAGEN COMPLETA
 # ---------------------------------------------------------
