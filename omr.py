@@ -124,22 +124,22 @@ def detectar_respuestas_20(zona_bin, zona_color):
         segundo = ordenados[1]
         media = np.mean(valores)
 
-        # 1) Vacía (umbral más bajo)
-        if max_val < 80:
+        # 1) Vacía (umbral más bajo para bolígrafo azul)
+        if max_val < 35:
             respuestas.append(None)
             for (x0,y0,x1,y1) in coords:
                 cv2.rectangle(mapa, (x0,y0), (x1,y1), (255,255,255), 2)
             continue
 
-        # 2) Doble marca
-        if segundo > max_val * 0.65:
+        # 2) Doble marca (más estricto)
+        if segundo > max_val * 0.80:
             respuestas.append("X")
             for (x0,y0,x1,y1) in coords:
                 cv2.rectangle(mapa, (x0,y0), (x1,y1), (0,0,255), 2)
             continue
 
         # 3) Marca débil (más permisivo)
-        if max_val < media * 1.05:
+        if max_val < media * 0.90:
             respuestas.append("?")
             idx = valores.index(max_val)
             x0,y0,x1,y1 = coords[idx]
