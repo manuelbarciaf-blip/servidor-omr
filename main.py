@@ -1,17 +1,17 @@
-FROM python:3.10-slim
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from omr import procesar_omr
 
-# Dependencias del sistema para OpenCV + pyzbar
-RUN apt-get update && apt-get install -y \
-    libzbar0 \
-    libglib2.0-0 \
-    libgl1 \
-    && rm -rf /var/lib/apt/lists/*
+app = FastAPI()
 
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+@app.post("/corregir_omr")
+async def corregir_omr(request: Request):
+    try:
+        binario = await request.body()
+        resultado = procesar_omr(binario)
+        return JSONResponse(resultado)
+    except Exception as e:
+        return JSONResponse(
+            {"error": str(e)},
+            status_code=500
+        )
