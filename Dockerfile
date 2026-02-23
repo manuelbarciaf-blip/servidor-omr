@@ -1,7 +1,11 @@
 FROM python:3.10-slim
 
-# Instalar dependencias del sistema necesarias para pyzbar
-RUN apt-get update && apt-get install -y libzbar0
+# Dependencias del sistema para OpenCV + pyzbar
+RUN apt-get update && apt-get install -y \
+    libzbar0 \
+    libglib2.0-0 \
+    libgl1 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
