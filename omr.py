@@ -4,6 +4,17 @@ from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
 # ---------------------------------------------------------
+# ZONA OMR REAL (AJUSTADA A TU PLANTILLA CON 4 BURBUJAS A-D)
+# Foto: SOLO hoja A4 (como indicaste)
+# ---------------------------------------------------------
+VALORES_OMR = {
+    "x0": 0.18,   # antes 0.10 (muy a la izquierda)
+    "y0": 0.20,   # debajo del QR y cabecera
+    "x1": 0.88,   # incluir A B C D + columnas
+    "y1": 0.85    # toda la zona de preguntas
+}
+
+# ---------------------------------------------------------
 # LECTURA ROBUSTA DEL QR
 # ---------------------------------------------------------
 def leer_qr_original(img):
@@ -25,131 +36,89 @@ def leer_qr_original(img):
     return id_examen, id_alumno, fecha_qr
 
 # ---------------------------------------------------------
-# NORMALIZACIÓN DE IMAGEN (A4 ESTÁNDAR)
+# NORMALIZACIÓN (OPTIMIZADA PARA FOTO DE MÓVIL DE UNA HOJA)
 # ---------------------------------------------------------
 def normalizar_imagen(img):
-    img_resized = cv2.resize(img, (2480, 3508))  # A4 300dpi
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+    # NO forzar tamaño A4 (esto rompía tu detección)
+    h, w = img.shape[:2]
+
+    # Escalado suave solo si la imagen es enorme
+    if h > 2000:
+        escala = 2000 / h
+        img = cv2.resize(img, (int(w * escala), 2000))
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
 
     th = cv2.adaptiveThreshold(
-        blur, 255,
+        gray,
+        255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
-        31, 8
+        31,
+        8
     )
-    return th, img_resized
+
+    return th, img
 
 # ---------------------------------------------------------
-# DETECTAR LOS 4 CUADRADOS NEGROS DE REFERENCIA OMR
+# CORRECCIÓN DE INCLINACIÓN
 # ---------------------------------------------------------
-def detectar_cuadrados_referencia(th):
-    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cuadrados = []
+def corregir_inclinacion(th):
+    coords = np.column_stack(np.where(th > 0))
+    if coords.shape[0] == 0:
+        return th
 
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area < 1500:  # filtrar ruido
-            continue
+    angle = cv2.minAreaRect(coords)[-1]
+    angle = -(90 + angle) if angle < -45 else -angle
 
-        x, y, w, h = cv2.boundingRect(cnt)
-        ratio = w / float(h)
-
-        # Buscamos cuadrados grandes (como los de tu plantilla)
-        if 0.7 < ratio < 1.3:
-            cuadrados.append((x, y, w, h, area))
-
-    # Ordenar por área (los 4 más grandes serán las esquinas)
-    cuadrados = sorted(cuadrados, key=lambda c: c[4], reverse=True)[:4]
-
-    if len(cuadrados) < 4:
-        return None
-
-    # Obtener centros
-    centros = []
-    for (x, y, w, h, _) in cuadrados:
-        cx = x + w // 2
-        cy = y + h // 2
-        centros.append([cx, cy])
-
-    centros = np.array(centros, dtype="float32")
-
-    # Ordenar: arriba-izq, arriba-der, abajo-izq, abajo-der
-    s = centros.sum(axis=1)
-    diff = np.diff(centros, axis=1)
-
-    top_left = centros[np.argmin(s)]
-    bottom_right = centros[np.argmax(s)]
-    top_right = centros[np.argmin(diff)]
-    bottom_left = centros[np.argmax(diff)]
-
-    return np.array([top_left, top_right, bottom_left, bottom_right], dtype="float32")
-
-# ---------------------------------------------------------
-# CORREGIR PERSPECTIVA USANDO LOS CUADRADOS OMR
-# ---------------------------------------------------------
-def corregir_perspectiva(img_color, th):
-    puntos = detectar_cuadrados_referencia(th)
-
-    if puntos is None:
-        # fallback si no detecta cuadrados
-        return img_color, th
-
-    (tl, tr, bl, br) = puntos
-
-    ancho = int(max(
-        np.linalg.norm(tr - tl),
-        np.linalg.norm(br - bl)
-    ))
-
-    alto = int(max(
-        np.linalg.norm(bl - tl),
-        np.linalg.norm(br - tr)
-    ))
-
-    destino = np.array([
-        [0, 0],
-        [ancho - 1, 0],
-        [0, alto - 1],
-        [ancho - 1, alto - 1]
-    ], dtype="float32")
-
-    M = cv2.getPerspectiveTransform(puntos, destino)
-
-    warped_color = cv2.warpPerspective(img_color, M, (ancho, alto))
-    warped_th = cv2.warpPerspective(th, M, (ancho, alto))
-
-    return warped_color, warped_th
-
-# ---------------------------------------------------------
-# RECORTE AUTOMÁTICO DEL ÁREA DE BURBUJAS (SIN PORCENTAJES)
-# ---------------------------------------------------------
-def recortar_area_burbujas(img_color, th):
     h, w = th.shape
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
 
-    # Quitamos márgenes donde están los cuadrados y el QR
-    margen_x = int(w * 0.12)
-    margen_y_top = int(h * 0.18)
-    margen_y_bottom = int(h * 0.08)
-
-    zona_color = img_color[
-        margen_y_top:h - margen_y_bottom,
-        margen_x:w - margen_x
-    ]
-
-    zona_bin = th[
-        margen_y_top:h - margen_y_bottom,
-        margen_x:w - margen_x
-    ]
-
-    return zona_color, zona_bin
+    return cv2.warpAffine(
+        th,
+        M,
+        (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE
+    )
 
 # ---------------------------------------------------------
-# DETECCIÓN DE RESPUESTAS (DINÁMICA)
+# RECORTE PORCENTUAL (YA CORREGIDO PARA TU PLANTILLA)
 # ---------------------------------------------------------
-def detectar_respuestas(zona_bin, zona_color, filas=20, opciones=4):
+def recortar_porcentual(img, valores):
+    h, w = img.shape[:2]
+
+    x0 = int(w * valores["x0"])
+    y0 = int(h * valores["y0"])
+    x1 = int(w * valores["x1"])
+    y1 = int(h * valores["y1"])
+
+    # Seguridad: evitar recortes inválidos
+    x0 = max(0, x0)
+    y0 = max(0, y0)
+    x1 = min(w, x1)
+    y1 = min(h, y1)
+
+    return img[y0:y1, x0:x1]
+
+# ---------------------------------------------------------
+# DETECCIÓN DINÁMICA (FUNCIONA DE 20 A 60 PREGUNTAS)
+# ---------------------------------------------------------
+def detectar_respuestas_dinamico(zona_bin, zona_color):
     h, w = zona_bin.shape
+
+    # Detectar automáticamente número de filas
+    # (Optimizado para tus exámenes de 10 en 10)
+    if h < 600:
+        filas = 20
+    elif h < 1000:
+        filas = 40
+    else:
+        filas = 60
+
+    opciones = 4
     alto_fila = h // filas
     ancho_op = w // opciones
 
@@ -160,8 +129,8 @@ def detectar_respuestas(zona_bin, zona_color, filas=20, opciones=4):
     for fila in range(filas):
         y0 = fila * alto_fila
         y1 = (fila + 1) * alto_fila
-
         fila_img = zona_bin[y0:y1, :]
+
         valores = []
         coords = []
 
@@ -177,19 +146,20 @@ def detectar_respuestas(zona_bin, zona_color, filas=20, opciones=4):
         max_val = max(valores)
         idx = valores.index(max_val)
 
+        # Vacía
         if max_val < 40:
             respuestas.append(None)
             continue
 
+        # Marca clara
         respuestas.append(letras[idx])
-
         x0, y0, x1, y1 = coords[idx]
         cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 0), 3)
 
     return respuestas, mapa
 
 # ---------------------------------------------------------
-# FUNCIÓN PRINCIPAL (USADA POR FASTAPI)
+# FUNCIÓN PRINCIPAL (COMPATIBLE CON TU main.py y PHP)
 # ---------------------------------------------------------
 def procesar_omr(binario):
     img_array = np.frombuffer(binario, np.uint8)
@@ -198,22 +168,23 @@ def procesar_omr(binario):
     if img is None:
         return {"ok": False, "error": "No se pudo decodificar la imagen"}
 
-    # 1. Leer QR
     id_examen, id_alumno, fecha_qr = leer_qr_original(img)
 
-    # 2. Normalizar imagen
     th, img_norm = normalizar_imagen(img)
+    th_corr = corregir_inclinacion(th)
 
-    # 3. Corregir perspectiva usando los cuadrados OMR
-    warped_color, warped_th = corregir_perspectiva(img_norm, th)
+    zona_bin = recortar_porcentual(th_corr, VALORES_OMR)
+    zona_color = recortar_porcentual(img_norm, VALORES_OMR)
 
-    # 4. Recortar automáticamente el área real de burbujas
-    zona_color, zona_bin = recortar_area_burbujas(warped_color, warped_th)
+    # DEBUG CRÍTICO (para que vuelvas a ver la imagen en PHP)
+    if zona_color.size == 0:
+        return {
+            "ok": False,
+            "error": "Zona OMR vacía (recorte incorrecto)"
+        }
 
-    # 5. Detectar respuestas (20 por defecto, luego lo hacemos dinámico si quieres)
-    respuestas, mapa = detectar_respuestas(zona_bin, zona_color, filas=20)
+    respuestas, mapa = detectar_respuestas_dinamico(zona_bin, zona_color)
 
-    # Debug imágenes
     _, buffer = cv2.imencode(".jpg", zona_color)
     debug_b64 = base64.b64encode(buffer).decode()
 
