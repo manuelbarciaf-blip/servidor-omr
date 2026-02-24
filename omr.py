@@ -5,17 +5,18 @@ import base64
 # =========================================
 # CONFIGURACIÓN CALIBRADA A PLANTILLA REAL
 # =========================================
-# CONFIGURACIÓN OMR (1 COLUMNA FIJA - TU PLANTILLA)
+# CONFIGURACIÓN OMR PROFESIONAL (MÓVIL + AZUL/NEGRO + BURBUJA ROJA)
 VALORES_OMR = {
-    "x0": 0.16,
+    "x0": 0.16,   # zona real de respuestas (ajustada a tu hoja)
     "y0": 0.18,
     "x1": 0.34,
     "y1": 0.90
 }
 
-UMBRAL_MARCA = 0.35     # más bajo porque usamos máscara azul
-UMBRAL_DOBLE = 0.75
-UMBRAL_VACIO = 0.08
+# Umbrales calibrados para foto móvil
+UMBRAL_MARCA = 0.30     # marca válida (azul o negro)
+UMBRAL_DOBLE = 0.70     # doble marca = inválida (X)
+UMBRAL_VACIO = 0.07     # pregunta en blanco
 # =========================================
 # LECTURA QR (NO SE TOCA - YA TE FUNCIONA)
 # =========================================
@@ -41,24 +42,32 @@ def leer_qr_original(img):
 # NORMALIZACIÓN ROBUSTA PARA FOTO DE MÓVIL
 # =========================================
 def normalizar_imagen(img):
-    # Redimensionar A4 estándar
+    # 1. Redimensionar a tamaño A4 estándar (muy importante para estabilidad)
     img_resized = cv2.resize(img, (2480, 3508))
 
-    # Convertir a HSV (MEJOR para detectar azul)
+    # 2. Convertir a HSV (mejor para detectar tinta que escala de grises)
     hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
 
-    # Rango de azul de bolígrafo (muy importante)
+    # 3. Detectar tinta AZUL (bolígrafo)
     lower_blue = np.array([90, 50, 50])
     upper_blue = np.array([140, 255, 255])
-
-    # Máscara SOLO de tinta azul
     mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
 
-    # Suavizar para eliminar ruido del círculo rojo
-    mask_blue = cv2.GaussianBlur(mask_blue, (5, 5), 0)
+    # 4. Detectar tinta NEGRA (bolígrafo negro)
+    lower_black = np.array([0, 0, 0])
+    upper_black = np.array([180, 255, 80])
+    mask_black = cv2.inRange(hsv, lower_black, upper_black)
 
-    # Threshold final (binario limpio)
-    _, th = cv2.threshold(mask_blue, 50, 255, cv2.THRESH_BINARY)
+    # 5. Combinar ambas máscaras (azul + negro)
+    mask_tinta = cv2.bitwise_or(mask_blue, mask_black)
+
+    # 6. Limpiar ruido (círculos rojos y sombras del móvil)
+    kernel = np.ones((3, 3), np.uint8)
+    mask_tinta = cv2.morphologyEx(mask_tinta, cv2.MORPH_OPEN, kernel)
+    mask_tinta = cv2.GaussianBlur(mask_tinta, (5, 5), 0)
+
+    # 7. Threshold final suave (NO agresivo para no pintar toda la burbuja)
+    _, th = cv2.threshold(mask_tinta, 40, 255, cv2.THRESH_BINARY)
 
     return th, img_resized
 # =========================================
