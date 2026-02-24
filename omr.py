@@ -41,21 +41,26 @@ def leer_qr_original(img):
 # NORMALIZACIÓN ROBUSTA PARA FOTO DE MÓVIL
 # =========================================
 def normalizar_imagen(img):
-    # A4 real para estabilizar proporciones
+    # Redimensionar A4 estándar
     img_resized = cv2.resize(img, (2480, 3508))
 
-    # Convertir a escala de grises
-    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
+    # Convertir a HSV (MEJOR para detectar azul)
+    hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
 
-    # Eliminar sombras del móvil (CLAVE)
-    blur = cv2.GaussianBlur(gray, (15, 15), 0)
-    div = cv2.divide(gray, blur, scale=255)
+    # Rango de azul de bolígrafo (muy importante)
+    lower_blue = np.array([90, 50, 50])
+    upper_blue = np.array([140, 255, 255])
 
-    # Binarización OMR real (mejor que adaptive para hojas)
-    _, th = cv2.threshold(div, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # Máscara SOLO de tinta azul
+    mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+
+    # Suavizar para eliminar ruido del círculo rojo
+    mask_blue = cv2.GaussianBlur(mask_blue, (5, 5), 0)
+
+    # Threshold final (binario limpio)
+    _, th = cv2.threshold(mask_blue, 50, 255, cv2.THRESH_BINARY)
 
     return th, img_resized
-
 # =========================================
 # DESKEW AUTOMÁTICO (ENDEREZAR FOTO)
 # =========================================
