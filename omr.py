@@ -2,22 +2,20 @@ import cv2
 import numpy as np
 from pyzbar.pyzbar import decode as zbar_decode
 import base64
-
 # =========================================
-# CONFIGURACIÓN INTELIGENTE OMR (MÓVIL + BURBUJAS ROJAS)
+# CONFIGURACIÓN CALIBRADA A PLANTILLA REAL
 # =========================================
 VALORES_OMR = {
-    "x0": 0.08,
+    "x0": 0.14,   # empieza en la columna de números
     "y0": 0.18,
-    "x1": 0.38,
-    "y1": 0.90
+    "x1": 0.32,   # termina justo después de la burbuja D
+    "y1": 0.88
 }
 
-# Umbrales tipo OMR profesional
-UMBRAL_MARCA = 0.55      # marca clara
-UMBRAL_DOBLE = 0.80      # doble marca = inválida
-UMBRAL_VACIO = 0.15      # pregunta en blanco
-
+# Umbrales calibrados para boli azul sobre círculo rojo
+UMBRAL_MARCA = 0.45      # marca válida
+UMBRAL_DOBLE = 0.75      # doble marca
+UMBRAL_VACIO = 0.10      # realmente en blanco
 # =========================================
 # LECTURA QR (NO SE TOCA - YA TE FUNCIONA)
 # =========================================
