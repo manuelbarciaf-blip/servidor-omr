@@ -5,17 +5,17 @@ import base64
 # =========================================
 # CONFIGURACIÓN CALIBRADA A PLANTILLA REAL
 # =========================================
+# CONFIGURACIÓN OMR (1 COLUMNA FIJA - TU PLANTILLA)
 VALORES_OMR = {
-    "x0": 0.14,   # empieza en la columna de números
+    "x0": 0.16,
     "y0": 0.18,
-    "x1": 0.32,   # termina justo después de la burbuja D
-    "y1": 0.88
+    "x1": 0.34,
+    "y1": 0.90
 }
 
-# Umbrales calibrados para boli azul sobre círculo rojo
-UMBRAL_MARCA = 0.45      # marca válida
-UMBRAL_DOBLE = 0.75      # doble marca
-UMBRAL_VACIO = 0.10      # realmente en blanco
+UMBRAL_MARCA = 0.35     # más bajo porque usamos máscara azul
+UMBRAL_DOBLE = 0.75
+UMBRAL_VACIO = 0.08
 # =========================================
 # LECTURA QR (NO SE TOCA - YA TE FUNCIONA)
 # =========================================
