@@ -1,166 +1,208 @@
 import cv2
 import numpy as np
-from pyzbar.pyzbar import decode
+from pyzbar.pyzbar import decode as zbar_decode
+import base64
 
-# -------------------------------
-# CONFIGURACIÓN OMR AVANZADA
-# -------------------------------
-UMBRAL_MARCADA = 0.22      # densidad mínima para considerar marcada
-UMBRAL_DEBIL = 0.12        # marca débil (revisar)
-UMBRAL_DOBLE = 0.35        # si dos superan, doble marca
-DEBUG = True               # guarda imagen debug
+# =========================================
+# CONFIGURACIÓN INTELIGENTE OMR (MÓVIL + BURBUJAS ROJAS)
+# =========================================
+VALORES_OMR = {
+    "x0": 0.08,
+    "y0": 0.18,
+    "x1": 0.38,
+    "y1": 0.90
+}
 
-def detectar_qr(imagen):
-    qr = decode(imagen)
-    if qr:
-        return qr[0].data.decode("utf-8")
-    return None
+# Umbrales tipo OMR profesional
+UMBRAL_MARCA = 0.55      # marca clara
+UMBRAL_DOBLE = 0.80      # doble marca = inválida
+UMBRAL_VACIO = 0.15      # pregunta en blanco
 
+# =========================================
+# LECTURA QR (NO SE TOCA - YA TE FUNCIONA)
+# =========================================
+def leer_qr_original(img):
+    qr_img = cv2.resize(img.copy(), (900, 1300))
+    gray = cv2.cvtColor(qr_img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-def ordenar_puntos(pts):
-    pts = pts.reshape(4, 2)
-    suma = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1)
+    codes = zbar_decode(gray)
+    if not codes:
+        return None, None, None
 
-    rect = np.zeros((4, 2), dtype="float32")
-    rect[0] = pts[np.argmin(suma)]
-    rect[2] = pts[np.argmax(suma)]
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
+    data = codes[0].data.decode("utf-8").strip()
+    partes = data.split("|")
 
-    return rect
+    id_examen = int(partes[0]) if len(partes) >= 1 and partes[0].isdigit() else None
+    id_alumno = int(partes[1]) if len(partes) >= 2 and partes[1].isdigit() else None
+    fecha_qr = partes[2] if len(partes) >= 3 else None
 
+    return id_examen, id_alumno, fecha_qr
 
-def deskew_hoja(imagen):
-    gray = cv2.cvtColor(imagen, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 50, 150)
+# =========================================
+# NORMALIZACIÓN ROBUSTA PARA FOTO DE MÓVIL
+# =========================================
+def normalizar_imagen(img):
+    # A4 real para estabilizar proporciones
+    img_resized = cv2.resize(img, (2480, 3508))
 
-    contornos, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contornos = sorted(contornos, key=cv2.contourArea, reverse=True)
+    # Convertir a escala de grises
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
 
-    for c in contornos:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+    # Eliminar sombras del móvil (CLAVE)
+    blur = cv2.GaussianBlur(gray, (15, 15), 0)
+    div = cv2.divide(gray, blur, scale=255)
 
-        if len(approx) == 4:
-            rect = ordenar_puntos(approx)
-            (tl, tr, br, bl) = rect
+    # Binarización OMR real (mejor que adaptive para hojas)
+    _, th = cv2.threshold(div, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-            ancho = 2100
-            alto = 2970
+    return th, img_resized
 
-            dst = np.array([
-                [0, 0],
-                [ancho, 0],
-                [ancho, alto],
-                [0, alto]
-            ], dtype="float32")
+# =========================================
+# DESKEW AUTOMÁTICO (ENDEREZAR FOTO)
+# =========================================
+def corregir_inclinacion(th):
+    coords = np.column_stack(np.where(th > 0))
+    if len(coords) < 500:
+        return th
 
-            M = cv2.getPerspectiveTransform(rect, dst)
-            warp = cv2.warpPerspective(imagen, M, (ancho, alto))
-            return warp
+    angle = cv2.minAreaRect(coords)[-1]
+    angle = -(90 + angle) if angle < -45 else -angle
 
-    return imagen  # fallback
+    h, w = th.shape
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
 
+    rotated = cv2.warpAffine(
+        th, M, (w, h),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_REPLICATE
+    )
 
-def obtener_zona_omr(hoja):
-    h, w = hoja.shape[:2]
+    return rotated
 
-    # Zona izquierda donde están las burbujas (según tu plantilla)
-    x1 = int(w * 0.05)
-    x2 = int(w * 0.35)
-    y1 = int(h * 0.15)
-    y2 = int(h * 0.95)
+# =========================================
+# RECORTE INTELIGENTE ZONA OMR
+# =========================================
+def recortar_porcentual(img, valores):
+    h, w = img.shape[:2]
+    return img[
+        int(h * valores["y0"]):int(h * valores["y1"]),
+        int(w * valores["x0"]):int(w * valores["x1"])
+    ]
 
-    return hoja[y1:y2, x1:x2]
+# =========================================
+# DETECTOR DE DENSIDAD TIPO GRAVIC (PRO)
+# =========================================
+def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
+    filas = total_preguntas
+    opciones = 4
 
+    h, w = zona_bin.shape
+    alto_fila = h // filas
+    ancho_op = w // opciones
 
-def calcular_densidad(burbuja):
-    # Convertir a HSV para ignorar el rojo del borde
-    hsv = cv2.cvtColor(burbuja, cv2.COLOR_BGR2HSV)
-
-    # Detectar tinta azul y negra (no el rojo)
-    mask_azul = cv2.inRange(hsv, (90, 50, 50), (140, 255, 255))
-    gray = cv2.cvtColor(burbuja, cv2.COLOR_BGR2GRAY)
-    _, mask_negro = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)
-
-    mask = cv2.bitwise_or(mask_azul, mask_negro)
-
-    area = mask.size
-    relleno = cv2.countNonZero(mask)
-
-    return relleno / float(area)
-
-
-def procesar_burbujas(zona, num_preguntas=20, opciones=4):
-    h, w = zona.shape[:2]
-
-    paso_y = h / num_preguntas
-    paso_x = w / opciones
-
+    letras = ["A", "B", "C", "D"]
     respuestas = []
-    debug_img = zona.copy()
+    mapa = zona_color.copy()
 
-    for i in range(num_preguntas):
+    for fila in range(filas):
+        y0 = fila * alto_fila
+        y1 = (fila + 1) * alto_fila
+
+        fila_img = zona_bin[y0:y1, :]
+
         densidades = []
+        coords = []
 
-        for j in range(opciones):
-            x1 = int(j * paso_x + paso_x * 0.2)
-            x2 = int((j + 1) * paso_x - paso_x * 0.2)
-            y1 = int(i * paso_y + paso_y * 0.2)
-            y2 = int((i + 1) * paso_y - paso_y * 0.2)
+        for o in range(opciones):
+            x0 = o * ancho_op
+            x1 = (o + 1) * ancho_op
 
-            burbuja = zona[y1:y2, x1:x2]
-            densidad = calcular_densidad(burbuja)
+            celda = fila_img[:, x0:x1]
+
+            # DENSIDAD REAL (clave profesional)
+            total_pixeles = celda.size
+            negros = cv2.countNonZero(celda)
+            densidad = negros / total_pixeles
+
             densidades.append(densidad)
+            coords.append((x0, y0, x1, y1))
 
-            if DEBUG:
-                cv2.rectangle(debug_img, (x1, y1), (x2, y2), (0, 255, 0), 1)
+        max_d = max(densidades)
+        idx_max = densidades.index(max_d)
 
-        # Clasificación avanzada
-        marcadas = [d for d in densidades if d > UMBRAL_MARCADA]
+        # ORDENAR PARA DETECTAR DOBLE MARCA
+        orden = sorted(densidades, reverse=True)
+        segundo = orden[1]
 
-        if len(marcadas) == 0:
-            respuestas.append("")  # en blanco
-        elif len(marcadas) > 1:
-            respuestas.append("X")  # doble marca (inválida)
-        else:
-            idx = np.argmax(densidades)
-            respuestas.append(["A", "B", "C", "D"][idx])
+        # ---------------------------
+        # PREGUNTA EN BLANCO
+        # ---------------------------
+        if max_d < UMBRAL_VACIO:
+            respuestas.append(None)
+            continue
 
-    return respuestas, debug_img
+        # ---------------------------
+        # DOBLE MARCA (INVÁLIDA)
+        # ---------------------------
+        if segundo > max_d * UMBRAL_DOBLE:
+            respuestas.append("X")
+            for (x0, y0, x1, y1) in coords:
+                cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 0, 255), 2)
+            continue
 
+        # ---------------------------
+        # MARCA DÉBIL (REVISAR)
+        # ---------------------------
+        if max_d < UMBRAL_MARCA:
+            respuestas.append("?")
+            x0, y0, x1, y1 = coords[idx_max]
+            cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 255), 3)
+            continue
 
+        # ---------------------------
+        # RESPUESTA VÁLIDA
+        # ---------------------------
+        respuestas.append(letras[idx_max])
+        x0, y0, x1, y1 = coords[idx_max]
+        cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 0), 3)
+
+    return respuestas, mapa
+
+# =========================================
+# FUNCIÓN PRINCIPAL (API)
+# =========================================
 def procesar_omr(binario):
-    try:
-        nparr = np.frombuffer(binario, np.uint8)
-        imagen = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img_array = np.frombuffer(binario, np.uint8)
+    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
-        if imagen is None:
-            return {"ok": False, "error": "Imagen no válida"}
+    if img is None:
+        return {"ok": False, "error": "Imagen no válida"}
 
-        # 1. Detectar QR
-        qr = detectar_qr(imagen)
+    id_examen, id_alumno, fecha_qr = leer_qr_original(img)
 
-        # 2. Enderezar hoja (deskew automático)
-        hoja = deskew_hoja(imagen)
+    th, img_norm = normalizar_imagen(img)
+    th_corr = corregir_inclinacion(th)
 
-        # 3. Recortar zona OMR
-        zona_omr = obtener_zona_omr(hoja)
+    zona_bin = recortar_porcentual(th_corr, VALORES_OMR)
+    zona_color = recortar_porcentual(img_norm, VALORES_OMR)
 
-        # 4. Detectar respuestas (densidad tipo Gravic)
-        respuestas, debug = procesar_burbujas(zona_omr, num_preguntas=20)
+    respuestas, mapa = detectar_respuestas(zona_bin, zona_color, total_preguntas=20)
 
-        # Guardar debug para ver qué está leyendo
-        if DEBUG:
-            cv2.imwrite("debug_omr.jpg", debug)
+    # Debug visual (lo que tu PHP muestra)
+    _, buffer = cv2.imencode(".jpg", zona_color)
+    debug_b64 = base64.b64encode(buffer).decode()
 
-        return {
-            "ok": True,
-            "qr": qr,
-            "respuestas": respuestas
-        }
+    _, map_buf = cv2.imencode(".jpg", mapa)
+    debug_map = base64.b64encode(map_buf).decode()
 
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    return {
+        "ok": True,
+        "codigo": f"{id_examen}|{id_alumno}|{fecha_qr}" if id_examen else None,
+        "id_examen": id_examen,
+        "id_alumno": id_alumno,
+        "fecha_qr": fecha_qr,
+        "respuestas": respuestas,
+        "debug_image": debug_b64,
+        "debug_map": debug_map
+    }
