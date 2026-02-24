@@ -4,25 +4,27 @@ from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
 # ---------------------------------------------------------
-# ZONA OMR REAL (AJUSTADA A TU PLANTILLA CON 4 BURBUJAS A-D)
-# Foto: SOLO hoja A4 (como indicaste)
+# CONFIG ZONA OMR (ajustada a tu plantilla)
 # ---------------------------------------------------------
 VALORES_OMR = {
-    "x0": 0.18,   # antes 0.10 (muy a la izquierda)
-    "y0": 0.20,   # debajo del QR y cabecera
-    "x1": 0.88,   # incluir A B C D + columnas
-    "y1": 0.85    # toda la zona de preguntas
+    "x0": 0.15,
+    "y0": 0.22,
+    "x1": 0.90,
+    "y1": 0.88
 }
 
-# ---------------------------------------------------------
-# LECTURA ROBUSTA DEL QR
-# ---------------------------------------------------------
-def leer_qr_original(img):
-    qr_img = cv2.resize(img.copy(), (900, 1300))
-    gray = cv2.cvtColor(qr_img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+# Umbrales tipo Gravic (ajustados para bolígrafo azul/negro)
+UMBRAL_VACIO = 0.12
+UMBRAL_DEBIL = 0.20
+UMBRAL_DOBLE = 0.75
 
+# ---------------------------------------------------------
+# LECTURA QR
+# ---------------------------------------------------------
+def leer_qr(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     codes = zbar_decode(gray)
+
     if not codes:
         return None, None, None
 
@@ -31,21 +33,19 @@ def leer_qr_original(img):
 
     id_examen = int(partes[0]) if len(partes) >= 1 and partes[0].isdigit() else None
     id_alumno = int(partes[1]) if len(partes) >= 2 and partes[1].isdigit() else None
-    fecha_qr = partes[2] if len(partes) >= 3 else None
+    fecha = partes[2] if len(partes) >= 3 else None
 
-    return id_examen, id_alumno, fecha_qr
+    return id_examen, id_alumno, fecha
 
 # ---------------------------------------------------------
-# NORMALIZACIÓN (OPTIMIZADA PARA FOTO DE MÓVIL DE UNA HOJA)
+# NORMALIZACIÓN
 # ---------------------------------------------------------
-def normalizar_imagen(img):
-    # NO forzar tamaño A4 (esto rompía tu detección)
+def normalizar(img):
     h, w = img.shape[:2]
 
-    # Escalado suave solo si la imagen es enorme
-    if h > 2000:
-        escala = 2000 / h
-        img = cv2.resize(img, (int(w * escala), 2000))
+    if h > 2500:
+        escala = 2500 / h
+        img = cv2.resize(img, (int(w * escala), 2500))
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
@@ -56,25 +56,25 @@ def normalizar_imagen(img):
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
-        31,
-        8
+        35,
+        10
     )
 
     return th, img
 
 # ---------------------------------------------------------
-# CORRECCIÓN DE INCLINACIÓN
+# DESKEW
 # ---------------------------------------------------------
-def corregir_inclinacion(th):
+def deskew(th):
     coords = np.column_stack(np.where(th > 0))
-    if coords.shape[0] == 0:
+    if len(coords) < 10:
         return th
 
     angle = cv2.minAreaRect(coords)[-1]
     angle = -(90 + angle) if angle < -45 else -angle
 
     h, w = th.shape
-    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+    M = cv2.getRotationMatrix2D((w//2, h//2), angle, 1.0)
 
     return cv2.warpAffine(
         th,
@@ -85,9 +85,9 @@ def corregir_inclinacion(th):
     )
 
 # ---------------------------------------------------------
-# RECORTE PORCENTUAL (YA CORREGIDO PARA TU PLANTILLA)
+# RECORTE
 # ---------------------------------------------------------
-def recortar_porcentual(img, valores):
+def recortar(img, valores):
     h, w = img.shape[:2]
 
     x0 = int(w * valores["x0"])
@@ -95,109 +95,129 @@ def recortar_porcentual(img, valores):
     x1 = int(w * valores["x1"])
     y1 = int(h * valores["y1"])
 
-    # Seguridad: evitar recortes inválidos
-    x0 = max(0, x0)
-    y0 = max(0, y0)
-    x1 = min(w, x1)
-    y1 = min(h, y1)
-
     return img[y0:y1, x0:x1]
 
 # ---------------------------------------------------------
-# DETECCIÓN DINÁMICA (FUNCIONA DE 20 A 60 PREGUNTAS)
+# DETECCIÓN POR COLUMNAS DINÁMICA
 # ---------------------------------------------------------
-def detectar_respuestas_dinamico(zona_bin, zona_color):
+def detectar_respuestas(zona_bin, zona_color):
     h, w = zona_bin.shape
 
-    # Detectar automáticamente número de filas
-    # (Optimizado para tus exámenes de 10 en 10)
-    if h < 600:
-        filas = 20
-    elif h < 1000:
-        filas = 40
+    # Determinar columnas según ancho
+    if w < 800:
+        columnas = 1
+        filas_por_col = 20
+    elif w < 1400:
+        columnas = 2
+        filas_por_col = 20
     else:
-        filas = 60
+        columnas = 3
+        filas_por_col = 20
 
     opciones = 4
-    alto_fila = h // filas
-    ancho_op = w // opciones
-
+    ancho_col = w // columnas
     letras = ["A", "B", "C", "D"]
+
     respuestas = []
     mapa = zona_color.copy()
 
-    for fila in range(filas):
-        y0 = fila * alto_fila
-        y1 = (fila + 1) * alto_fila
-        fila_img = zona_bin[y0:y1, :]
+    for col in range(columnas):
+        x_col0 = col * ancho_col
+        x_col1 = (col + 1) * ancho_col
 
-        valores = []
-        coords = []
+        col_bin = zona_bin[:, x_col0:x_col1]
+        col_color = mapa[:, x_col0:x_col1]
 
-        for o in range(opciones):
-            x0 = o * ancho_op
-            x1 = (o + 1) * ancho_op
-            celda = fila_img[:, x0:x1]
+        alto_fila = h // filas_por_col
+        ancho_op = ancho_col // opciones
 
-            negros = cv2.countNonZero(celda)
-            valores.append(negros)
-            coords.append((x0, y0, x1, y1))
+        for fila in range(filas_por_col):
+            y0 = fila * alto_fila
+            y1 = (fila + 1) * alto_fila
 
-        max_val = max(valores)
-        idx = valores.index(max_val)
+            fila_bin = col_bin[y0:y1, :]
 
-        # Vacía
-        if max_val < 40:
-            respuestas.append(None)
-            continue
+            densidades = []
+            coords = []
 
-        # Marca clara
-        respuestas.append(letras[idx])
-        x0, y0, x1, y1 = coords[idx]
-        cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 0), 3)
+            for o in range(opciones):
+                x0 = o * ancho_op
+                x1 = (o + 1) * ancho_op
+
+                celda = fila_bin[:, x0:x1]
+                area = celda.size
+                negros = cv2.countNonZero(celda)
+
+                densidad = negros / float(area)
+                densidades.append(densidad)
+                coords.append((x_col0 + x0, y0, x_col0 + x1, y1))
+
+            max_d = max(densidades)
+            idx = densidades.index(max_d)
+
+            sorted_d = sorted(densidades, reverse=True)
+
+            # VACÍA
+            if max_d < UMBRAL_VACIO:
+                respuestas.append(None)
+                continue
+
+            # DÉBIL
+            if max_d < UMBRAL_DEBIL:
+                respuestas.append("?")
+                x0,y0,x1,y1 = coords[idx]
+                cv2.rectangle(mapa,(x0,y0),(x1,y1),(0,255,255),3)
+                continue
+
+            # DOBLE
+            if sorted_d[1] > max_d * UMBRAL_DOBLE:
+                respuestas.append("X")
+                for i,d in enumerate(densidades):
+                    if d > max_d * UMBRAL_DOBLE:
+                        x0,y0,x1,y1 = coords[i]
+                        cv2.rectangle(mapa,(x0,y0),(x1,y1),(0,0,255),3)
+                continue
+
+            # VÁLIDA
+            respuestas.append(letras[idx])
+            x0,y0,x1,y1 = coords[idx]
+            cv2.rectangle(mapa,(x0,y0),(x1,y1),(0,255,0),3)
 
     return respuestas, mapa
 
 # ---------------------------------------------------------
-# FUNCIÓN PRINCIPAL (COMPATIBLE CON TU main.py y PHP)
+# FUNCIÓN PRINCIPAL
 # ---------------------------------------------------------
 def procesar_omr(binario):
     img_array = np.frombuffer(binario, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
     if img is None:
-        return {"ok": False, "error": "No se pudo decodificar la imagen"}
+        return {"ok": False, "error": "Imagen inválida"}
 
-    id_examen, id_alumno, fecha_qr = leer_qr_original(img)
+    id_examen, id_alumno, fecha = leer_qr(img)
 
-    th, img_norm = normalizar_imagen(img)
-    th_corr = corregir_inclinacion(th)
+    th, img_norm = normalizar(img)
+    th_corr = deskew(th)
 
-    zona_bin = recortar_porcentual(th_corr, VALORES_OMR)
-    zona_color = recortar_porcentual(img_norm, VALORES_OMR)
+    zona_bin = recortar(th_corr, VALORES_OMR)
+    zona_color = recortar(img_norm, VALORES_OMR)
 
-    # DEBUG CRÍTICO (para que vuelvas a ver la imagen en PHP)
-    if zona_color.size == 0:
-        return {
-            "ok": False,
-            "error": "Zona OMR vacía (recorte incorrecto)"
-        }
+    respuestas, mapa = detectar_respuestas(zona_bin, zona_color)
 
-    respuestas, mapa = detectar_respuestas_dinamico(zona_bin, zona_color)
+    _, buf1 = cv2.imencode(".jpg", zona_color)
+    debug_image = base64.b64encode(buf1).decode()
 
-    _, buffer = cv2.imencode(".jpg", zona_color)
-    debug_b64 = base64.b64encode(buffer).decode()
-
-    _, map_buf = cv2.imencode(".jpg", mapa)
-    debug_map = base64.b64encode(map_buf).decode()
+    _, buf2 = cv2.imencode(".jpg", mapa)
+    debug_map = base64.b64encode(buf2).decode()
 
     return {
         "ok": True,
-        "codigo": f"{id_examen}|{id_alumno}|{fecha_qr}" if id_examen else None,
+        "codigo": f"{id_examen}|{id_alumno}|{fecha}" if id_examen else None,
         "id_examen": id_examen,
         "id_alumno": id_alumno,
-        "fecha_qr": fecha_qr,
+        "fecha_qr": fecha,
         "respuestas": respuestas,
-        "debug_image": debug_b64,
+        "debug_image": debug_image,
         "debug_map": debug_map
     }
