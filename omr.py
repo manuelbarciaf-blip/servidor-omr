@@ -11,9 +11,9 @@ import os
 
 DB_CONFIG = {
     "host": "localhost",
-    "user": "root",
-    "password": "",
-    "database": "tu_base_de_datos",
+    "user": "mygabiasfue9",
+    "password": "gabias_2025",
+    "database": "rrhhclases",
     "cursorclass": pymysql.cursors.DictCursor
 }
 
