@@ -48,26 +48,26 @@ def normalizar_a4(img):
 # =========================================
 def leer_qr(img):
     # 1) Intento global (toda la hoja)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    codes = zbar_decode(gray)
+    gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    codes = zbar_decode(gray_full)
     if codes:
         return codes[0].data.decode("utf-8").strip()
 
     # 2) Intento ampliado en la zona superior izquierda
     h, w = img.shape[:2]
 
-    # Ampliamos la región para evitar fallos por desplazamiento
+    # Región más grande para evitar fallos por inclinación o margen
     x0 = int(w * 0.00)
     y0 = int(h * 0.00)
-    x1 = int(w * 0.45)   # antes 0.35 → ahora más ancho
-    y1 = int(h * 0.35)   # antes 0.25 → ahora más alto
+    x1 = int(w * 0.50)   # antes 0.35 → ahora más ancho
+    y1 = int(h * 0.40)   # antes 0.25 → ahora más alto
 
     qr_crop = img[y0:y1, x0:x1]
 
     if qr_crop.size == 0:
         return None
 
-    # Escalado más fuerte para QR pequeño
+    # Escalado fuerte para QR pequeño
     qr_crop = cv2.resize(qr_crop, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
 
     gray_qr = cv2.cvtColor(qr_crop, cv2.COLOR_BGR2GRAY)
