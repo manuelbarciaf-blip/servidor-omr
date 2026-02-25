@@ -4,32 +4,32 @@ from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
 # =========================================
-# CONFIGURACIÓN REAL DE TU PLANTILLA A4
-# (1 COLUMNA IZQUIERDA + QR ARRIBA)
+# CONFIGURACIÓN A4 CENTRADA (TIPO GRAVIC)
 # =========================================
 VALORES_OMR = {
-    # Columna izquierda completa de burbujas (ANTES estaba demasiado a la derecha)
-    "x0": 0.05,
-    "x1": 0.36,
+    # Columna central estable
+    "x0": 0.30,
+    "x1": 0.70,
 
-    # Primera burbuja en el cuarto superior (como dijiste)
-    "y0": 0.22,
-    "y1": 0.88
+    # Empieza en tercio superior
+    "y0": 0.32,
+    "y1": 0.90
 }
 
 NUM_OPCIONES = 4  # A B C D
 
 # Umbrales calibrados para:
-# - Foto móvil
-# - Bolígrafo azul/negro
-# - Burbuja roja (solo contorno)
-UMBRAL_MARCA = 0.18     # marca clara rellena
-UMBRAL_DOBLE = 0.75     # doble marca = inválida
-UMBRAL_VACIO = 0.04     # pregunta en blanco
-UMBRAL_DEBIL = 0.10     # marca débil (revisar)
+# - móvil
+# - tinta azul / negra
+# - burbuja roja contorno
+UMBRAL_MARCA = 0.18
+UMBRAL_DOBLE = 0.75
+UMBRAL_VACIO = 0.04
+UMBRAL_DEBIL = 0.10
+
 
 # =========================================
-# LECTURA QR (LA TUYA FUNCIONA - NO TOCO)
+# LECTURA QR
 # =========================================
 def leer_qr_original(img):
     qr_img = cv2.resize(img.copy(), (900, 1300))
@@ -51,42 +51,36 @@ def leer_qr_original(img):
 
 
 # =========================================
-# NORMALIZACIÓN PRO PARA FOTO DE MÓVIL
-# (CLAVE PARA JPG)
+# NORMALIZACIÓN PROFESIONAL (MÓVIL)
 # =========================================
 def normalizar_imagen(img):
-    # Normalizar SIEMPRE a A4 (estabilidad absoluta)
     img_resized = cv2.resize(img, (2480, 3508))
 
-    # Convertir a HSV (mejor que gris para tinta real)
     hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
 
-    # Tinta azul (bolígrafo)
+    # Azul
     lower_blue = np.array([90, 40, 40])
     upper_blue = np.array([140, 255, 255])
     mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
 
-    # Tinta negra (bolígrafo negro)
+    # Negro
     lower_black = np.array([0, 0, 0])
     upper_black = np.array([180, 255, 90])
     mask_black = cv2.inRange(hsv, lower_black, upper_black)
 
-    # Combinar máscaras (SOLO tinta, ignora burbuja roja)
     mask_tinta = cv2.bitwise_or(mask_blue, mask_black)
 
-    # Limpiar ruido del móvil
     kernel = np.ones((3, 3), np.uint8)
     mask_tinta = cv2.morphologyEx(mask_tinta, cv2.MORPH_OPEN, kernel)
     mask_tinta = cv2.GaussianBlur(mask_tinta, (5, 5), 0)
 
-    # Threshold suave (NO agresivo para no rellenar toda la burbuja)
     _, th = cv2.threshold(mask_tinta, 35, 255, cv2.THRESH_BINARY)
 
     return th, img_resized
 
 
 # =========================================
-# DESKEW AUTOMÁTICO (ENDEREZA FOTO MÓVIL)
+# DESKEW REAL
 # =========================================
 def corregir_inclinacion(th):
     coords = np.column_stack(np.where(th > 0))
@@ -109,7 +103,7 @@ def corregir_inclinacion(th):
 
 
 # =========================================
-# RECORTE PORCENTAJE (ZONA OMR REAL)
+# RECORTE PORCENTAJE
 # =========================================
 def recortar_porcentual(img, valores):
     h, w = img.shape[:2]
@@ -120,19 +114,16 @@ def recortar_porcentual(img, valores):
 
 
 # =========================================
-# DETECTOR DENSIDAD TIPO GRAVIC (PRO)
-# 1 columna fija – 20 preguntas
+# DETECTOR PROFESIONAL TIPO GRAVIC
 # =========================================
-def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
+def detectar_respuestas(zona_bin, zona_color, total_preguntas):
     filas = total_preguntas
     opciones = NUM_OPCIONES
 
     h, w = zona_bin.shape
 
-    # IMPORTANTE: ajuste compacto (tu plantilla es densa)
-    factor_compacto = 0.96
-    alto_fila = int((h * factor_compacto) / filas)
-    ancho_op = w // opciones
+    alto_fila = int(h / filas)
+    ancho_op = int(w / opciones)
 
     letras = ["A", "B", "C", "D"]
     respuestas = []
@@ -175,21 +166,21 @@ def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
             respuestas.append(None)
             continue
 
-        # DOBLE MARCA (INVÁLIDA)
+        # DOBLE
         if segundo > max_d * UMBRAL_DOBLE:
             respuestas.append("X")
             for (x0, y0, x1, y1) in coords:
                 cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 0, 255), 2)
             continue
 
-        # MARCA DÉBIL (REVISAR)
+        # DÉBIL
         if max_d < UMBRAL_MARCA:
             respuestas.append("?")
             x0, y0, x1, y1 = coords[idx_max]
-            cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 255), 3)
+            cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 255), 2)
             continue
 
-        # RESPUESTA VÁLIDA
+        # VÁLIDA
         respuestas.append(letras[idx_max])
         x0, y0, x1, y1 = coords[idx_max]
         cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 0), 3)
@@ -198,36 +189,36 @@ def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
 
 
 # =========================================
-# FUNCIÓN PRINCIPAL (API DOCKER + PHP)
+# FUNCIÓN PRINCIPAL
 # =========================================
-def procesar_omr(binario):
+def procesar_omr(binario, total_preguntas):
     img_array = np.frombuffer(binario, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
     if img is None:
         return {"ok": False, "error": "Imagen no válida"}
 
-    # 1. Leer QR (antes de cualquier transformación)
+    # 1. QR
     id_examen, id_alumno, fecha_qr = leer_qr_original(img)
 
-    # 2. Normalización profesional (móvil)
+    # 2. Normalización
     th, img_norm = normalizar_imagen(img)
 
-    # 3. Deskew automático
+    # 3. Deskew
     th_corr = corregir_inclinacion(th)
 
-    # 4. Recorte zona OMR real (columna izquierda)
+    # 4. Recorte zona OMR central
     zona_bin = recortar_porcentual(th_corr, VALORES_OMR)
     zona_color = recortar_porcentual(img_norm, VALORES_OMR)
 
-    # 5. Detectar respuestas (1 columna fija)
+    # 5. Detectar respuestas según nº real del examen
     respuestas, mapa = detectar_respuestas(
         zona_bin,
         zona_color,
-        total_preguntas=20
+        total_preguntas=total_preguntas
     )
 
-    # Debug visual para tu corregir_omr.php
+    # Debug
     _, buffer = cv2.imencode(".jpg", zona_color)
     debug_b64 = base64.b64encode(buffer).decode()
 
@@ -241,6 +232,6 @@ def procesar_omr(binario):
         "id_alumno": id_alumno,
         "fecha_qr": fecha_qr,
         "respuestas": respuestas,
-        "debug_image": debug_b64,  # hoja recortada (la que NO veías)
-        "debug_map": debug_map     # detección pintada
+        "debug_image": debug_b64,
+        "debug_map": debug_map
     }
