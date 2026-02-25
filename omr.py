@@ -10,14 +10,11 @@ app = FastAPI()
 
 # =========================================
 # CONFIG REAL DE TU HOJA (NUEVO DISEÑO)
-# - QR arriba derecha (2x2 cm)
-# - Burbujas en el CENTRO A4
-# - Empiezan en tercio superior
 # =========================================
 QR_REGION = {
-    "x0": 0.65,
+    "x0": 0.00,   # QR ahora está a la izquierda
     "y0": 0.00,
-    "x1": 1.00,
+    "x1": 0.35,
     "y1": 0.25
 }
 
@@ -31,33 +28,30 @@ OMR_REGION = {
 OPCIONES = ["A", "B", "C", "D"]
 PREGUNTAS_POR_HOJA = 20
 
-# Calibrado para:
-# - burbuja negra
-# - boli azul/negro
-# - foto móvil
+# =========================================
+# NUEVOS UMBRALES (MEJORADOS)
+# =========================================
 UMBRAL_MARCA = 0.30
 UMBRAL_DOBLE = 0.75
-UMBRAL_VACIO = 0.08
+UMBRAL_VACIO = 0.05   # antes 0.08 → ahora detecta marcas suaves
 
 
 # =========================================
-# NORMALIZAR A4 (ESTABILIDAD TOTAL)
+# NORMALIZAR A4
 # =========================================
 def normalizar_a4(img):
     return cv2.resize(img, (2480, 3508))
 
 
 # =========================================
-# LECTURA QR (BINARIO + QR PEQUEÑO)
+# LECTURA QR
 # =========================================
 def leer_qr(img):
-    # Intento 1: hoja completa
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     codes = zbar_decode(gray)
     if codes:
         return codes[0].data.decode("utf-8").strip()
 
-    # Intento 2: región superior derecha ampliada
     h, w = img.shape[:2]
     x0 = int(w * QR_REGION["x0"])
     y0 = int(h * QR_REGION["y0"])
@@ -65,13 +59,10 @@ def leer_qr(img):
     y1 = int(h * QR_REGION["y1"])
 
     qr_crop = img[y0:y1, x0:x1]
-
     if qr_crop.size == 0:
         return None
 
-    # Escalar x3 para QR de 2x2 cm (CLAVE)
     qr_crop = cv2.resize(qr_crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-
     gray_qr = cv2.cvtColor(qr_crop, cv2.COLOR_BGR2GRAY)
     gray_qr = cv2.GaussianBlur(gray_qr, (3, 3), 0)
 
@@ -83,20 +74,19 @@ def leer_qr(img):
 
 
 # =========================================
-# DETECTAR TINTA REAL (AZUL + NEGRO)
-# IGNORA burbuja negra impresa
+# MÁSCARA DE TINTA (MEJORADA)
 # =========================================
 def preparar_mascara_tinta(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # Bolígrafo azul
-    lower_blue = np.array([90, 40, 40])
-    upper_blue = np.array([140, 255, 255])
+    # Azul claro + azul normal
+    lower_blue = np.array([70, 10, 10])
+    upper_blue = np.array([150, 255, 255])
     mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
 
-    # Bolígrafo negro
-    lower_black = np.array([0, 0, 0])
-    upper_black = np.array([180, 255, 80])
+    # Negro de bolígrafo (evitando burbuja impresa)
+    lower_black = np.array([0, 0, 40])
+    upper_black = np.array([180, 255, 120])
     mask_black = cv2.inRange(hsv, lower_black, upper_black)
 
     mask = cv2.bitwise_or(mask_blue, mask_black)
@@ -110,7 +100,7 @@ def preparar_mascara_tinta(img):
 
 
 # =========================================
-# RECORTE POR PORCENTAJE (ROBUSTO A MÓVIL)
+# RECORTE POR PORCENTAJE
 # =========================================
 def recortar(img, region):
     h, w = img.shape[:2]
@@ -121,8 +111,7 @@ def recortar(img, region):
 
 
 # =========================================
-# OMR TIPO GRAVIC (DENSIDAD REAL)
-# 1 columna central, 4 opciones
+# DETECCIÓN OMR
 # =========================================
 def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
     h, w = zona_bin.shape
@@ -165,7 +154,7 @@ def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
             respuestas.append("")
             continue
 
-        # Doble marca (inválida)
+        # Doble marca
         if segundo > max_d * UMBRAL_DOBLE:
             respuestas.append("X")
             for (x0, y0, x1, y1) in coords:
@@ -181,12 +170,11 @@ def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
 
 
 # =========================================
-# ENDPOINT COMPATIBLE CON TU PHP (BINARIO)
+# ENDPOINT PRINCIPAL
 # =========================================
 @app.post("/")
 async def procesar_omr(request: Request):
     try:
-        # TU PHP envía application/octet-stream (binario crudo)
         binario = await request.body()
 
         if not binario:
@@ -198,33 +186,27 @@ async def procesar_omr(request: Request):
         if img is None:
             return {"ok": False, "error": "No se pudo decodificar la imagen"}
 
-        # 1. Normalizar a A4
         img_a4 = normalizar_a4(img)
 
-        # 2. Leer QR (ANTES del OMR)
         codigo = leer_qr(img_a4)
         if not codigo:
             return {"ok": False, "error": "QR no detectado"}
 
-        # 3. Preparar máscara de tinta real
         th = preparar_mascara_tinta(img_a4)
 
-        # 4. Recortar zona central de burbujas
         zona_bin = recortar(th, OMR_REGION)
         zona_color = recortar(img_a4, OMR_REGION)
 
-        # 5. Detectar respuestas (20 por hoja)
         respuestas, mapa = detectar_respuestas(zona_bin, zona_color, 20)
 
-        # Debug visual (tu PHP lo usa en debug_image)
         _, buffer = cv2.imencode(".jpg", zona_color)
         debug_image = base64.b64encode(buffer).decode()
 
         return {
             "ok": True,
-            "codigo": codigo,           # 👈 EXACTO lo que tu PHP espera
+            "codigo": codigo,
             "respuestas": respuestas,
-            "debug_image": debug_image  # 👈 tu visor derecho
+            "debug_image": debug_image
         }
 
     except Exception as e:
