@@ -3,5 +3,4 @@ uvicorn
 opencv-python-headless
 numpy
 pyzbar
-Pillow
-
+python-multipart
