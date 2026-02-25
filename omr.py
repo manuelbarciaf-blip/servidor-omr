@@ -12,7 +12,7 @@ app = FastAPI()
 # CONFIG REAL DE TU HOJA (NUEVO DISEÑO)
 # =========================================
 QR_REGION = {
-    "x0": 0.00,   # QR ahora está a la izquierda
+    "x0": 0.00,   # QR a la izquierda
     "y0": 0.00,
     "x1": 0.35,
     "y1": 0.25
@@ -29,11 +29,11 @@ OPCIONES = ["A", "B", "C", "D"]
 PREGUNTAS_POR_HOJA = 20
 
 # =========================================
-# NUEVOS UMBRALES (MEJORADOS)
+# UMBRALES AJUSTADOS
 # =========================================
 UMBRAL_MARCA = 0.30
 UMBRAL_DOBLE = 0.75
-UMBRAL_VACIO = 0.05   # antes 0.08 → ahora detecta marcas suaves
+UMBRAL_VACIO = 0.05   # detecta marcas suaves
 
 
 # =========================================
@@ -149,19 +149,16 @@ def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
         idx = densidades.index(max_d)
         segundo = sorted(densidades, reverse=True)[1]
 
-        # Pregunta en blanco
         if max_d < UMBRAL_VACIO:
             respuestas.append("")
             continue
 
-        # Doble marca
         if segundo > max_d * UMBRAL_DOBLE:
             respuestas.append("X")
             for (x0, y0, x1, y1) in coords:
                 cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 0, 255), 2)
             continue
 
-        # Respuesta válida
         respuestas.append(OPCIONES[idx])
         x0, y0, x1, y1 = coords[idx]
         cv2.rectangle(mapa, (x0, y0), (x1, y1), (0, 255, 0), 3)
@@ -176,6 +173,10 @@ def detectar_respuestas(zona_bin, zona_color, total_preguntas=20):
 async def procesar_omr(request: Request):
     try:
         binario = await request.body()
+
+        # DEBUG OPCIONAL: ver si la imagen llega bien
+        # with open("debug_recibido.jpg", "wb") as f:
+        #     f.write(binario)
 
         if not binario:
             return {"ok": False, "error": "Imagen vacía"}
