@@ -4,54 +4,91 @@ from pyzbar.pyzbar import decode as zbar_decode
 import base64
 
 # =========================================
-# CONFIG
+# CONFIG (OPTIMIZADO PARA TU PLANTILLA FIJA)
 # =========================================
-QR_REGION = {
-    "x0": 0.00,
-    "y0": 0.00,
-    "x1": 0.50,
-    "y1": 0.40
-}
-
-OMR_REGION = {
-    "x0": 0.30,
-    "y0": 0.22,
-    "x1": 0.70,
-    "y1": 0.95
-}
-
-OPCIONES = ["A", "B", "C", "D"]
 PREGUNTAS_POR_HOJA = 20
+OPCIONES = ["A", "B", "C", "D"]
 
-UMBRAL_VACIO = 0.05
-UMBRAL_DOBLE = 0.75
+# Zona real tras normalizar a A4 (calibrada para tu hoja)
+OMR_REGION_PIX = {
+    "y0": 650,
+    "y1": 3000,
+    "x0": 780,
+    "x1": 1450
+}
+
+# Umbrales ajustados para bolígrafo azul/negro en fotos móviles
+UMBRAL_VACIO = 0.025
+UMBRAL_DOBLE = 0.70
 
 # =========================================
-# NORMALIZAR
+# NORMALIZAR A4 CON CORRECCIÓN DE PERSPECTIVA
+# (CLAVE para fotos con móvil)
 # =========================================
 def normalizar_a4(img):
-    return cv2.resize(img, (2480, 3508))
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Detectar zonas negras (esquinas de tu plantilla)
+    thresh = cv2.threshold(blur, 60, 255, cv2.THRESH_BINARY_INV)[1]
+    contornos, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    candidatos = []
+    for c in contornos:
+        area = cv2.contourArea(c)
+        if area > 4000:  # esquinas negras grandes
+            x, y, w, h = cv2.boundingRect(c)
+            candidatos.append((x, y, w, h))
+
+    # Si no detecta esquinas (fallback seguro)
+    if len(candidatos) < 4:
+        return cv2.resize(img, (2480, 3508))
+
+    # Centros de las esquinas
+    puntos = []
+    for (x, y, w, h) in candidatos:
+        puntos.append([x + w // 2, y + h // 2])
+
+    pts = np.array(puntos, dtype="float32")
+
+    # Ordenar esquinas correctamente
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]      # top-left
+    rect[2] = pts[np.argmax(s)]      # bottom-right
+
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]   # top-right
+    rect[3] = pts[np.argmax(diff)]   # bottom-left
+
+    dst = np.array([
+        [0, 0],
+        [2480, 0],
+        [2480, 3508],
+        [0, 3508]
+    ], dtype="float32")
+
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(img, M, (2480, 3508))
+
+    return warped
+
 
 # =========================================
-# LECTOR QR ROBUSTO
+# LECTOR QR ROBUSTO (optimizado para tu hoja)
 # =========================================
 def leer_qr(img):
-    gray_full = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    codes = zbar_decode(gray_full)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Intento 1: imagen completa
+    codes = zbar_decode(gray)
     if codes:
         return codes[0].data.decode("utf-8").strip()
 
-    h, w = img.shape[:2]
-    x0 = int(w * 0.00)
-    y0 = int(h * 0.00)
-    x1 = int(w * 0.50)
-    y1 = int(h * 0.40)
+    # Intento 2: zona superior izquierda (donde está tu QR)
+    qr_crop = img[0:1200, 0:1200]
 
-    qr_crop = img[y0:y1, x0:x1]
-    if qr_crop.size == 0:
-        return None
-
-    qr_crop = cv2.resize(qr_crop, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
+    qr_crop = cv2.resize(qr_crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
     gray_qr = cv2.cvtColor(qr_crop, cv2.COLOR_BGR2GRAY)
     gray_qr = cv2.GaussianBlur(gray_qr, (3, 3), 0)
 
@@ -61,46 +98,53 @@ def leer_qr(img):
 
     return codes[0].data.decode("utf-8").strip()
 
+
 # =========================================
-# MÁSCARA DE TINTA
+# MÁSCARA DE TINTA (AZUL + NEGRO)
 # =========================================
 def preparar_mascara_tinta(img):
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    lower_blue = np.array([70, 10, 10])
-    upper_blue = np.array([150, 255, 255])
+    # Azul (bolígrafo típico)
+    lower_blue = np.array([80, 30, 30])
+    upper_blue = np.array([140, 255, 255])
     mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
 
-    lower_black = np.array([0, 0, 40])
+    # Negro / gris oscuro
+    lower_black = np.array([0, 0, 0])
     upper_black = np.array([180, 255, 120])
     mask_black = cv2.inRange(hsv, lower_black, upper_black)
 
     mask = cv2.bitwise_or(mask_blue, mask_black)
+
+    # Limpieza de ruido
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     mask = cv2.GaussianBlur(mask, (5, 5), 0)
 
-    _, th = cv2.threshold(mask, 20, 255, cv2.THRESH_BINARY)
+    _, th = cv2.threshold(mask, 25, 255, cv2.THRESH_BINARY)
     return th
 
+
 # =========================================
-# RECORTE
+# RECORTE OMR (COORDENADAS FIJAS = SIN DESFASE)
 # =========================================
-def recortar(img, region):
-    h, w = img.shape[:2]
+def recortar_omr(img):
     return img[
-        int(h * region["y0"]):int(h * region["y1"]),
-        int(w * region["x0"]):int(w * region["x1"])
+        OMR_REGION_PIX["y0"]:OMR_REGION_PIX["y1"],
+        OMR_REGION_PIX["x0"]:OMR_REGION_PIX["x1"]
     ]
 
+
 # =========================================
-# DETECCIÓN OMR
+# DETECCIÓN DE RESPUESTAS (PRECISA Y ESTABLE)
 # =========================================
-def detectar_respuestas(zona_bin, zona_color):
+def detectar_respuestas(zona_bin):
     h, w = zona_bin.shape
 
-    # ⚠️ AJUSTE CLAVE: recortar márgenes laterales (corrige el desfase A→B)
-    margen_izq = int(w * 0.10)
-    margen_der = int(w * 0.10)
-    zona_util = zona_bin[:, margen_izq:w - margen_der]
+    # Eliminar márgenes laterales (evita desplazamientos A→B)
+    margen = int(w * 0.08)
+    zona_util = zona_bin[:, margen:w - margen]
 
     h2, w2 = zona_util.shape
     alto_fila = int(h2 / PREGUNTAS_POR_HOJA)
@@ -111,8 +155,8 @@ def detectar_respuestas(zona_bin, zona_color):
     for i in range(PREGUNTAS_POR_HOJA):
         y0 = i * alto_fila
         y1 = y0 + alto_fila
-
         fila = zona_util[y0:y1, :]
+
         densidades = []
 
         for j in range(4):
@@ -124,26 +168,26 @@ def detectar_respuestas(zona_bin, zona_color):
                 densidades.append(0)
                 continue
 
-            densidad = cv2.countNonZero(celda) / celda.size
+            densidad = cv2.countNonZero(celda) / float(celda.size)
             densidades.append(densidad)
 
         max_d = max(densidades)
         idx = densidades.index(max_d)
         segundo = sorted(densidades, reverse=True)[1]
 
-        # Debug opcional (puedes comentar luego)
-        # print(f"Fila {i+1}: {densidades}")
-
+        # Lógica robusta OMR
         if max_d < UMBRAL_VACIO:
-            respuestas.append("")
+            respuestas.append("")          # en blanco
         elif segundo > max_d * UMBRAL_DOBLE:
-            respuestas.append("X")
+            respuestas.append("X")         # doble marca
         else:
             respuestas.append(OPCIONES[idx])
 
     return respuestas
+
+
 # =========================================
-# FUNCIÓN PRINCIPAL
+# FUNCIÓN PRINCIPAL (LA QUE USA PHP)
 # =========================================
 def procesar_omr(binario):
     npimg = np.frombuffer(binario, np.uint8)
@@ -155,10 +199,10 @@ def procesar_omr(binario):
             "error": "Imagen inválida"
         }
 
-    # Normalizar a tamaño A4
+    # 1️⃣ Normalizar hoja (perspectiva + A4 real)
     img_a4 = normalizar_a4(img)
 
-    # Leer QR
+    # 2️⃣ Leer QR
     codigo = leer_qr(img_a4)
     if not codigo:
         return {
@@ -166,18 +210,19 @@ def procesar_omr(binario):
             "error": "QR no detectado"
         }
 
-    # Preparar máscara de tinta
-    th = preparar_mascara_tinta(img_a4)
+    # 3️⃣ Detectar tinta (azul/negro)
+    mascara = preparar_mascara_tinta(img_a4)
 
-    # Recortar zona OMR
-    zona_bin = recortar(th, OMR_REGION)
-    zona_color = recortar(img_a4, OMR_REGION)
+    # 4️⃣ Recortar zona OMR estable
+    zona_bin = recortar_omr(mascara)
+    zona_color = recortar_omr(img_a4)
 
-    # Detectar respuestas
-    respuestas = detectar_respuestas(zona_bin, zona_color)
+    # 5️⃣ Detectar respuestas
+    respuestas = detectar_respuestas(zona_bin)
 
-    # Generar imagen debug (MUY IMPORTANTE para que la veas en PHP)
-    _, buffer = cv2.imencode(".jpg", zona_color)
+    # 6️⃣ Imagen debug (para tu visor PHP)
+    debug = cv2.cvtColor(zona_color, cv2.COLOR_BGR2RGB)
+    _, buffer = cv2.imencode(".jpg", debug, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     debug_base64 = base64.b64encode(buffer).decode("utf-8")
 
     return {
