@@ -139,18 +139,60 @@ def procesar_omr(binario):
         return {"ok": False, "error": "Imagen inválida"}
 
     img_a4 = normalizar_a4(img)
+    img_debug = img_a4.copy()
 
+    # =========================
+    # QR
+    # =========================
     codigo = leer_qr(img_a4)
+
+    h, w = img_a4.shape[:2]
+
+    # Dibujar región QR
+    x0 = int(w * QR_REGION["x0"])
+    y0 = int(h * QR_REGION["y0"])
+    x1 = int(w * QR_REGION["x1"])
+    y1 = int(h * QR_REGION["y1"])
+
+    if codigo:
+        color = (0, 255, 0)
+    else:
+        color = (0, 0, 255)
+
+    cv2.rectangle(img_debug, (x0, y0), (x1, y1), color, 6)
+
     if not codigo:
         return {"ok": False, "error": "QR no detectado"}
 
+    # =========================
+    # OMR
+    # =========================
     th = preparar_mascara_tinta(img_a4)
     zona_bin = recortar(th, OMR_REGION)
     zona_color = recortar(img_a4, OMR_REGION)
 
     respuestas = detectar_respuestas(zona_bin, zona_color)
 
+    # Dibujar región OMR
+    ox0 = int(w * OMR_REGION["x0"])
+    oy0 = int(h * OMR_REGION["y0"])
+    ox1 = int(w * OMR_REGION["x1"])
+    oy1 = int(h * OMR_REGION["y1"])
+
+    cv2.rectangle(img_debug, (ox0, oy0), (ox1, oy1), (255, 0, 0), 6)
+
+    # =========================
+    # CONVERTIR A BASE64
+    # =========================
+    _, buffer = cv2.imencode(".jpg", img_debug)
+    img_base64 = base64.b64encode(buffer).decode("utf-8")
+
     return {
+        "ok": True,
+        "codigo": codigo,
+        "respuestas": respuestas,
+        "debug_image": img_base64
+    }
         "ok": True,
         "codigo": codigo,
         "respuestas": respuestas
