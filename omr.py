@@ -96,8 +96,15 @@ def recortar(img, region):
 # =========================================
 def detectar_respuestas(zona_bin, zona_color):
     h, w = zona_bin.shape
-    alto_fila = int(h / PREGUNTAS_POR_HOJA)
-    ancho_op = int(w / 4)
+
+    # ⚠️ AJUSTE CLAVE: recortar márgenes laterales (corrige el desfase A→B)
+    margen_izq = int(w * 0.10)
+    margen_der = int(w * 0.10)
+    zona_util = zona_bin[:, margen_izq:w - margen_der]
+
+    h2, w2 = zona_util.shape
+    alto_fila = int(h2 / PREGUNTAS_POR_HOJA)
+    ancho_op = int(w2 / 4)
 
     respuestas = []
 
@@ -105,19 +112,27 @@ def detectar_respuestas(zona_bin, zona_color):
         y0 = i * alto_fila
         y1 = y0 + alto_fila
 
-        fila = zona_bin[y0:y1, :]
+        fila = zona_util[y0:y1, :]
         densidades = []
 
         for j in range(4):
             x0 = j * ancho_op
             x1 = (j + 1) * ancho_op
             celda = fila[:, x0:x1]
+
+            if celda.size == 0:
+                densidades.append(0)
+                continue
+
             densidad = cv2.countNonZero(celda) / celda.size
             densidades.append(densidad)
 
         max_d = max(densidades)
         idx = densidades.index(max_d)
         segundo = sorted(densidades, reverse=True)[1]
+
+        # Debug opcional (puedes comentar luego)
+        # print(f"Fila {i+1}: {densidades}")
 
         if max_d < UMBRAL_VACIO:
             respuestas.append("")
@@ -127,7 +142,6 @@ def detectar_respuestas(zona_bin, zona_color):
             respuestas.append(OPCIONES[idx])
 
     return respuestas
-
 # =========================================
 # FUNCIÓN PRINCIPAL
 # =========================================
