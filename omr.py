@@ -12,9 +12,13 @@ app = Flask(__name__)
 A4_W, A4_H = 2480, 3508
 OPCIONES = ["A", "B", "C", "D"]
 
+# Zona OMR fija dentro del A4 normalizado (ajústala solo si cambias la plantilla)
 OMR_REGION = {"y0": 650, "y1": 3000, "x0": 780, "x1": 1450}
+
+# Tu plantilla usa una rejilla "base" de 30 filas por hoja
 MAX_FILAS_POR_HOJA = 30
 
+# Umbrales (robustos para escáner + móvil)
 UMBRAL_VACIO = 0.055
 UMBRAL_DOBLE_RATIO = 0.78
 UMBRAL_DOBLE_ABS = 0.040
@@ -41,28 +45,30 @@ def normalizar_a4_con_marcas(img_bgr):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
+    # binaria invertida para que negro -> blanco
     _, th = cv2.threshold(blur, 70, 255, cv2.THRESH_BINARY_INV)
 
+    # limpieza
     kernel = np.ones((5, 5), np.uint8)
     th = cv2.morphologyEx(th, cv2.MORPH_OPEN, kernel, iterations=1)
     th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
 
     cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    h, w = gray.shape[:2]
     candidates = []
-
     for c in cnts:
         area = cv2.contourArea(c)
         if area < 2500:
             continue
         x, y, bw, bh = cv2.boundingRect(c)
         aspect = bw / float(bh) if bh else 0
+        # marcas casi cuadradas
         if 0.65 < aspect < 1.35:
             cx = x + bw / 2
             cy = y + bh / 2
             candidates.append((cx, cy))
 
+    # fallback
     if len(candidates) < 4:
         return cv2.resize(img_bgr, (A4_W, A4_H))
 
@@ -84,7 +90,7 @@ def normalizar_a4_con_marcas(img_bgr):
 
 
 # ============================================================
-# QR ROBUSTO (muchos intentos + rotaciones + preprocesado)
+# QR ROBUSTO (multi intentos + ROI + escalas + rotaciones + preprocess)
 # ============================================================
 def _try_decode_qr(detector, img_bgr):
     # intenta multi si existe
@@ -104,7 +110,6 @@ def _try_decode_qr(detector, img_bgr):
 
 
 def _preprocess_variants(img_bgr):
-    """Genera variantes para que el QRDetector tenga más opciones."""
     variants = []
 
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -116,7 +121,9 @@ def _preprocess_variants(img_bgr):
     variants.append(cv2.cvtColor(g1, cv2.COLOR_GRAY2BGR))
 
     # Sharpen
-    kernel_sh = np.array([[0,-1,0],[-1,5,-1],[0,-1,0]], dtype=np.float32)
+    kernel_sh = np.array([[0, -1, 0],
+                          [-1, 5, -1],
+                          [0, -1, 0]], dtype=np.float32)
     sh = cv2.filter2D(gray, -1, kernel_sh)
     variants.append(cv2.cvtColor(sh, cv2.COLOR_GRAY2BGR))
 
@@ -160,13 +167,12 @@ def leer_qr_robusto(img_bgr):
         ]
 
         for r in rots:
-            # Variantes preprocess
             for v in _preprocess_variants(r):
                 data = _try_decode_qr(det, v)
                 if data:
                     return data, b64jpg(qr_roi)
 
-    # 3) Último intento: buscar QR en zona grande superior (más contexto)
+    # 3) Último intento: zona superior grande (más contexto)
     top = img_bgr[0:1600, 0:1600].copy()
     for v in _preprocess_variants(top):
         data = _try_decode_qr(det, v)
@@ -182,7 +188,7 @@ def parsear_codigo_qr(codigo):
       id_examen|id_alumno|num_preguntas|pagina
     pagina opcional (1 o 2).
     """
-    partes = codigo.split("|")
+    partes = (codigo or "").split("|")
     if len(partes) < 3:
         return None
     try:
@@ -192,7 +198,7 @@ def parsear_codigo_qr(codigo):
         pagina = int(partes[3]) if len(partes) >= 4 and str(partes[3]).strip().isdigit() else 1
         pagina = 1 if pagina not in (1, 2) else pagina
         return id_examen, id_alumno, num_preguntas, pagina
-    except:
+    except Exception:
         return None
 
 
@@ -202,6 +208,7 @@ def parsear_codigo_qr(codigo):
 def binarizar_tinta_pro(img_bgr):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
+    # mejorar contraste (muy útil en móvil con sombras)
     clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
 
@@ -245,6 +252,7 @@ def detectar_respuestas(zona_bin, filas, debug_a4=None):
     zona = zona_bin[:, margen:w - margen]
     h2, w2 = zona.shape
 
+    # IMPORTANTE: la plantilla tiene paso constante de 30 “slots”
     alto_fila = int(h2 / float(MAX_FILAS_POR_HOJA))
     ancho_op = int(w2 / 4.0)
 
@@ -294,11 +302,10 @@ def detectar_respuestas(zona_bin, filas, debug_a4=None):
 
         respuestas.append(resp)
 
+        # Debug overlay
         if debug_a4 is not None:
-            # pintar rectángulos por opción
             for j in range(4):
                 x0, yy0, x1, yy1 = rois[j]
-
                 X0 = OMR_REGION["x0"] + margen + x0
                 X1 = OMR_REGION["x0"] + margen + x1
                 Y0 = OMR_REGION["y0"] + yy0
@@ -322,14 +329,14 @@ def procesar_omr(binario):
     if img is None:
         return {"ok": False, "error": "Imagen inválida"}
 
-    # 0) QR ANTES DE NORMALIZAR (a veces se lee mejor así)
+    # ✅ 0) QR ANTES DE NORMALIZAR (mejor calidad)
     codigo0, debug_qr0 = leer_qr_robusto(img)
     parsed0 = parsear_codigo_qr(codigo0) if codigo0 else None
 
-    # 1) normalizar A4
+    # 1) normalizar A4 con marcas
     img_a4 = normalizar_a4_con_marcas(img)
 
-    # 2) QR DESPUÉS DE NORMALIZAR (si el anterior falló)
+    # ✅ 2) si no se pudo parsear, reintentar QR tras normalizar
     codigo, debug_qr = (codigo0, debug_qr0)
     parsed = parsed0
 
@@ -341,12 +348,12 @@ def procesar_omr(binario):
         return {
             "ok": False,
             "error": "QR no detectado",
-            "debug_qr": debug_qr,  # para que lo veas en PHP
+            "debug_qr": debug_qr,
         }
 
     id_examen, id_alumno, num_preguntas, pagina = parsed
 
-    # 3) binarizar
+    # 3) binarizar tinta
     th = binarizar_tinta_pro(img_a4)
 
     # 4) recorte OMR
@@ -372,6 +379,7 @@ def procesar_omr(binario):
     # 6) detectar respuestas
     respuestas_lista, debug_a4 = detectar_respuestas(zona_bin, filas, debug_a4)
 
+    # salida dict por número global
     respuestas = {}
     for i, r in enumerate(respuestas_lista, start=1):
         respuestas[str(offset + i)] = r
