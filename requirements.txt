@@ -1,4 +1,3 @@
 flask
-numpy
 opencv-python-headless
-python-multipart
+numpy
