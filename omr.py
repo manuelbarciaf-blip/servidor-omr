@@ -2,9 +2,9 @@ import cv2
 import numpy as np
 import base64
 
-# =============================
+# =====================================================
 # CONFIGURACIÓN
-# =============================
+# =====================================================
 
 A4_W = 2480
 A4_H = 3508
@@ -23,9 +23,9 @@ UMBRAL_VACIO = 0.05
 UMBRAL_DOBLE = 0.80
 
 
-# =============================
-# NORMALIZAR HOJA A4
-# =============================
+# =====================================================
+# NORMALIZAR HOJA A4 (CORRECCIÓN PERSPECTIVA)
+# =====================================================
 
 def normalizar_a4(img):
 
@@ -36,7 +36,7 @@ def normalizar_a4(img):
 
     contornos,_ = cv2.findContours(th,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
 
-    marcas = []
+    puntos = []
 
     for c in contornos:
 
@@ -51,12 +51,13 @@ def normalizar_a4(img):
 
         if 0.6 < ratio < 1.4:
 
-            marcas.append((x+w/2,y+h/2))
+            puntos.append([x+w/2,y+h/2])
 
-    if len(marcas) < 4:
+    if len(puntos) < 4:
+
         return cv2.resize(img,(A4_W,A4_H))
 
-    pts = np.array(marcas,dtype="float32")
+    pts = np.array(puntos,dtype="float32")
 
     rect = np.zeros((4,2),dtype="float32")
 
@@ -82,9 +83,9 @@ def normalizar_a4(img):
     return warped
 
 
-# =============================
-# LECTOR QR (SIN PYZBAR)
-# =============================
+# =====================================================
+# LECTOR QR
+# =====================================================
 
 def leer_qr(img):
 
@@ -94,6 +95,8 @@ def leer_qr(img):
 
     if data:
         return data.strip()
+
+    # fallback zona superior izquierda
 
     crop = img[0:1200,0:1200]
 
@@ -107,9 +110,9 @@ def leer_qr(img):
     return None
 
 
-# =============================
+# =====================================================
 # BINARIZACIÓN ROBUSTA
-# =============================
+# =====================================================
 
 def binarizar(img):
 
@@ -137,9 +140,9 @@ def binarizar(img):
     return th
 
 
-# =============================
-# DETECCIÓN POR CONTORNOS
-# =============================
+# =====================================================
+# DETECTAR RESPUESTAS POR CONTORNOS
+# =====================================================
 
 def detectar_respuestas(zona_bin,zona_color,filas):
 
@@ -167,7 +170,8 @@ def detectar_respuestas(zona_bin,zona_color,filas):
             burbujas.append((x,y,w,h,c))
 
     if len(burbujas) < filas*4:
-        return [], zona_color
+
+        return [],zona_color
 
     burbujas = sorted(burbujas,key=lambda b:b[1])
 
@@ -214,6 +218,8 @@ def detectar_respuestas(zona_bin,zona_color,filas):
 
         respuestas.append(resp)
 
+        # debug visual
+
         for j,(x,y,w,h,c) in enumerate(fila):
 
             color = (0,255,0)
@@ -232,9 +238,9 @@ def detectar_respuestas(zona_bin,zona_color,filas):
     return respuestas,zona_color
 
 
-# =============================
+# =====================================================
 # CALCULAR FILAS SEGÚN QR
-# =============================
+# =====================================================
 
 def filas_hoja(num_preguntas,pagina):
 
@@ -247,9 +253,9 @@ def filas_hoja(num_preguntas,pagina):
     return num_preguntas-MAX_FILAS_POR_HOJA,MAX_FILAS_POR_HOJA
 
 
-# =============================
-# PROCESO PRINCIPAL
-# =============================
+# =====================================================
+# FUNCIÓN PRINCIPAL
+# =====================================================
 
 def procesar_omr(binario):
 
