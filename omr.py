@@ -8,30 +8,31 @@ import re
 app = Flask(__name__)
 
 # ============================================================
-# CONFIG ✅ (A4 normalizado + zonas)
+# CONFIG ✅ (ajustada a tu hoja real)
 # ============================================================
 A4_W, A4_H = 2480, 3508
 OPCIONES = ["A", "B", "C", "D"]
 
-# ✅ Zona OMR AMPLIADA POR ARRIBA (y un poco más ancha)
-# Ajusta si cambias tu plantilla PDF.
+# ✅ Ampliada por arriba (tu comentario)
+# Ajuste recomendado según tu última captura: subir y0 y ampliar y1 un poco
 OMR_REGION = {
-    "y0": 380,     # ⬅️ más arriba (antes 520/650)
-    "y1": 3200,
-    "x0": 560,
-    "x1": 1750
+    "y0": 430,     # antes 520
+    "y1": 3250,    # antes 3150
+    "x0": 600,     # antes 620
+    "x1": 1700     # antes 1680
 }
 
+# La plantilla usa slots base de 30 filas por hoja
 MAX_FILAS_POR_HOJA = 30
 
-# Umbrales lectura tinta (móvil + escáner)
-UMBRAL_VACIO = 0.050          # % tinta mínima para considerar marcada
-UMBRAL_DOBLE_RATIO = 0.82     # si 2ª opción está muy cerca de la 1ª
-UMBRAL_DOBLE_ABS = 0.035      # y además supera un mínimo absoluto
+# Umbrales para tinta (móvil/escáner)
+UMBRAL_VACIO = 0.050
+UMBRAL_DOBLE_RATIO = 0.80
+UMBRAL_DOBLE_ABS = 0.035
 
-# ROI interior para no contar borde impreso (círculo)
-INNER_PAD = 0.28   # 0.25–0.35 suele ir bien
-
+# ROI interior dentro de cada celda (para no contar el borde)
+INNER_PAD_X = 0.22
+INNER_PAD_Y = 0.22
 
 # ============================================================
 # UTIL: imagen -> base64 jpg
@@ -42,14 +43,14 @@ def b64jpg(img_bgr, quality=85):
         return None
     return base64.b64encode(buff).decode("utf-8")
 
-
 # ============================================================
-# 1) NORMALIZAR A4 con marcas negras
+# 1) NORMALIZAR A4 con marcas negras (robusto)
 # ============================================================
 def normalizar_a4_con_marcas(img_bgr):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
 
+    # negro -> blanco (invertida)
     _, th = cv2.threshold(blur, 75, 255, cv2.THRESH_BINARY_INV)
 
     kernel = np.ones((5, 5), np.uint8)
@@ -57,8 +58,8 @@ def normalizar_a4_con_marcas(img_bgr):
     th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
 
     cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
     h, w = gray.shape[:2]
+
     candidates = []
     for c in cnts:
         area = cv2.contourArea(c)
@@ -112,11 +113,11 @@ def normalizar_a4_con_marcas(img_bgr):
     warped = cv2.warpPerspective(img_bgr, M, (A4_W, A4_H))
     return warped
 
-
 # ============================================================
-# 2) QR ROBUSTO (ROI fijo + rotaciones + escalas + preprocess)
+# 2) QR ROBUSTO (multi-intentos + ROI fijo + warp si hay puntos)
 # ============================================================
 def _try_decode(det, img_bgr):
+    # Multi si existe
     try:
         ok, decoded_info, points, _ = det.detectAndDecodeMulti(img_bgr)
         if ok and decoded_info:
@@ -127,21 +128,23 @@ def _try_decode(det, img_bgr):
     except Exception:
         pass
 
-    s, _, _ = det.detectAndDecode(img_bgr)
+    s, pts, _ = det.detectAndDecode(img_bgr)
     s = (s or "").strip()
-    return s if s else None
-
+    if s:
+        return s
+    return None
 
 def _variants(img_bgr):
     out = [img_bgr]
-
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(8, 8))
     g1 = clahe.apply(gray)
     out.append(cv2.cvtColor(g1, cv2.COLOR_GRAY2BGR))
 
-    k = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    k = np.array([[0, -1, 0],
+                  [-1, 5, -1],
+                  [0, -1, 0]], dtype=np.float32)
     sh = cv2.filter2D(g1, -1, k)
     out.append(cv2.cvtColor(sh, cv2.COLOR_GRAY2BGR))
 
@@ -153,25 +156,63 @@ def _variants(img_bgr):
                                cv2.THRESH_BINARY, 31, 7)
     out.append(cv2.cvtColor(ad, cv2.COLOR_GRAY2BGR))
     out.append(cv2.cvtColor(255 - ad, cv2.COLOR_GRAY2BGR))
-
     return out
 
+def _warp_qr_if_points(det, img_bgr):
+    """
+    Si detecta QR (puntos) pero no decodifica, intentamos enderezarlo (warp) y re-decodificar.
+    """
+    ok = det.detect(img_bgr)[0] if isinstance(det.detect(img_bgr), tuple) else False
+    try:
+        ok, pts = det.detect(img_bgr)
+    except Exception:
+        return None
+    if not ok or pts is None:
+        return None
+    pts = pts.reshape(-1, 2).astype(np.float32)
+    if pts.shape[0] != 4:
+        return None
+
+    # ordenar puntos
+    s = pts.sum(axis=1)
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    d = np.diff(pts, axis=1).reshape(-1)
+    tr = pts[np.argmin(d)]
+    bl = pts[np.argmax(d)]
+
+    src = np.array([tl, tr, br, bl], dtype=np.float32)
+    size = 600
+    dst = np.array([[0, 0], [size, 0], [size, size], [0, size]], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(img_bgr, M, (size, size))
+
+    # probar varias variantes del warp
+    for v in _variants(warped):
+        s = _try_decode(det, v)
+        if s:
+            return s
+    return None
 
 def leer_qr_robusto(img_bgr):
     det = cv2.QRCodeDetector()
 
-    # 0) Intento en toda la imagen (con variantes)
+    # 0) Imagen completa (y warp si detecta puntos)
     for v in _variants(img_bgr):
         s = _try_decode(det, v)
         if s:
             return s, None
+        sw = _warp_qr_if_points(det, v)
+        if sw:
+            return sw, None
 
-    # 1) ROI fijo arriba izquierda (tu QR siempre ahí)
-    qr_roi = img_bgr[0:1400, 0:1400].copy()
+    # 1) ROI fijo sup-izq (tu QR SIEMPRE ahí)
+    qr_roi = img_bgr[0:1300, 0:1300].copy()
     debug_qr = b64jpg(qr_roi, 90)
 
-    scales = [1.0, 1.6, 2.2, 2.8, 3.4]
-    rotations = [
+    scales = [1.0, 1.8, 2.6, 3.4]
+    rots = [
         lambda im: im,
         lambda im: cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE),
         lambda im: cv2.rotate(im, cv2.ROTATE_180),
@@ -183,48 +224,44 @@ def leer_qr_robusto(img_bgr):
         if sc != 1.0:
             roi = cv2.resize(roi, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
 
-        for rot in rotations:
+        for rot in rots:
             rr = rot(roi)
             for v in _variants(rr):
                 s = _try_decode(det, v)
                 if s:
                     return s, debug_qr
+                sw = _warp_qr_if_points(det, v)
+                if sw:
+                    return sw, debug_qr
 
-    # 2) ROI grande por si el QR está un poco más metido
+    # 2) ROI grande con más contexto
     big = img_bgr[0:1700, 0:1700].copy()
     for v in _variants(big):
         s = _try_decode(det, v)
         if s:
             return s, debug_qr
+        sw = _warp_qr_if_points(det, v)
+        if sw:
+            return sw, debug_qr
 
     return None, debug_qr
 
-
 def parsear_codigo_qr(codigo):
     """
-    ✅ Tu formato real:
+    Formato real tuyo:
       id_examen|id_alumno|fecha|num_preguntas
-    opcional:
-      |pagina
-
-    Soporta también:
-      id_examen|id_alumno|num_preguntas|pagina   (legacy)
-    y fallback por regex si viene texto mezclado.
+    (pagina opcional al final si algún día la añades)
     """
     if not codigo:
         return None
 
-    partes = [p.strip() for p in codigo.split("|") if p.strip()]
-
-    # Caso normal con |
-    if len(partes) >= 4:
-        # Si 3ª parte parece fecha (tiene '-'), entonces:
-        # 1=id_examen, 2=id_alumno, 3=fecha, 4=num_preguntas, 5=pagina?
-        if "-" in partes[2] and partes[3].isdigit():
+    if "|" in codigo:
+        partes = [p.strip() for p in codigo.split("|") if p.strip()]
+        if len(partes) >= 4:
             try:
                 id_examen = int(partes[0])
                 id_alumno = int(partes[1])
-                fecha = partes[2]
+                fecha = partes[2]  # string yyyy-mm-dd
                 num_preg = int(partes[3])
                 pagina = int(partes[4]) if len(partes) >= 5 and partes[4].isdigit() else 1
                 pagina = 1 if pagina not in (1, 2) else pagina
@@ -232,44 +269,29 @@ def parsear_codigo_qr(codigo):
             except:
                 pass
 
-        # Legacy: 3ª num_preg
-        if partes[2].isdigit():
-            try:
-                id_examen = int(partes[0])
-                id_alumno = int(partes[1])
-                fecha = None
-                num_preg = int(partes[2])
-                pagina = int(partes[3]) if len(partes) >= 4 and partes[3].isdigit() else 1
-                pagina = 1 if pagina not in (1, 2) else pagina
-                return id_examen, id_alumno, fecha, num_preg, pagina
-            except:
-                pass
-
-    # Fallback regex (si el QR trae texto con números)
+    # fallback: extraer enteros (por si el QR trae texto extra)
     nums = re.findall(r"\d+", codigo)
-    # mínimo: examen, alumno, (año), (mes), (día), num_preg...
-    # aquí no adivinamos fecha segura; al menos sacamos examen/alumno/num_preg si se puede.
-    if len(nums) >= 3:
-        try:
-            id_examen = int(nums[0])
-            id_alumno = int(nums[1])
-            num_preg = int(nums[-1])  # normalmente el último
-            fecha = None
-            pagina = 1
-            return id_examen, id_alumno, fecha, num_preg, pagina
-        except:
-            pass
-
-    return None
-
+    # esperamos al menos id_examen, id_alumno, yyyy, mm, dd, num_preg
+    if len(nums) < 6:
+        return None
+    try:
+        id_examen = int(nums[0])
+        id_alumno = int(nums[1])
+        fecha = f"{nums[2]}-{nums[3].zfill(2)}-{nums[4].zfill(2)}"
+        num_preg = int(nums[5])
+        pagina = int(nums[6]) if len(nums) >= 7 else 1
+        pagina = 1 if pagina not in (1, 2) else pagina
+        return id_examen, id_alumno, fecha, num_preg, pagina
+    except:
+        return None
 
 # ============================================================
-# 3) BINARIZACIÓN tinta (móvil/escáner)
+# 3) BINARIZACIÓN PRO (móvil/escáner)
 # ============================================================
 def binarizar_tinta_pro(img_bgr):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    clahe = cv2.createCLAHE(clipLimit=2.4, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
     gray = clahe.apply(gray)
 
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -286,9 +308,8 @@ def binarizar_tinta_pro(img_bgr):
     th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel, iterations=2)
     return th
 
-
 # ============================================================
-# 4) filas según QR + página (hasta 60 => 2 hojas)
+# 4) FILAS SEGÚN QR + PÁGINA (hasta 60 => 2 hojas)
 # ============================================================
 def filas_a_leer(num_preguntas, pagina):
     if pagina == 1:
@@ -297,172 +318,139 @@ def filas_a_leer(num_preguntas, pagina):
         return 0, MAX_FILAS_POR_HOJA
     return min(num_preguntas - MAX_FILAS_POR_HOJA, MAX_FILAS_POR_HOJA), MAX_FILAS_POR_HOJA
 
+# ============================================================
+# 5) AUTO-COLUMNAS (para no confundir A/B/C/D)
+# ============================================================
+def detectar_columnas_auto(zona_gray):
+    """
+    Encuentra 4 columnas usando proyección vertical de bordes.
+    Devuelve una lista de 5 límites [x0, x1, x2, x3, x4] (4 celdas).
+    """
+    # Bordes -> las circunferencias destacan mucho
+    edges = cv2.Canny(zona_gray, 40, 120)
+    # suavizar perfil
+    prof = edges.sum(axis=0).astype(np.float32)
+
+    # normalizar y suavizar
+    prof = prof / (prof.max() + 1e-6)
+    prof = cv2.GaussianBlur(prof.reshape(1, -1), (1, 61), 0).reshape(-1)
+
+    w = zona_gray.shape[1]
+    # buscamos 4 picos en la zona izquierda (donde están las burbujas) pero sin asumir demasiado:
+    # tomamos el 70% izquierdo como región probable
+    left_w = int(w * 0.72)
+    prof2 = prof[:left_w]
+
+    # escoger candidatos: puntos con valor alto
+    idxs = np.argsort(prof2)[::-1]  # desc
+    peaks = []
+    min_sep = int(w * 0.08)  # separación mínima entre picos
+
+    for i in idxs:
+        if prof2[i] < 0.25:
+            break
+        if all(abs(i - p) > min_sep for p in peaks):
+            peaks.append(int(i))
+        if len(peaks) >= 4:
+            break
+
+    # fallback: dividir en 4 si no detecta bien
+    if len(peaks) < 4:
+        return [0, w//4, w//2, 3*w//4, w]
+
+    peaks = sorted(peaks)
+    # convertir centros a límites (midpoints)
+    bounds = [0]
+    for a, b in zip(peaks[:-1], peaks[1:]):
+        bounds.append(int((a + b) / 2))
+    bounds.append(w)
+
+    # ahora bounds tiene 5 elementos idealmente, si no, fallback
+    if len(bounds) != 5:
+        return [0, w//4, w//2, 3*w//4, w]
+    return bounds
 
 # ============================================================
-# 5) DETECTAR CÍRCULOS + CLUSTER columnas/filas (sin rejilla fija)
+# 6) DETECTOR OMR (rejilla estable 1 columna A-D)
 # ============================================================
-def _kmeans_1d(values, k):
-    """k-means 1D simple usando cv2.kmeans"""
-    vals = np.array(values, dtype=np.float32).reshape(-1, 1)
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 0.1)
-    _, labels, centers = cv2.kmeans(vals, k, None, criteria, 10, cv2.KMEANS_PP_CENTERS)
-    centers = centers.flatten()
-    return labels.flatten(), centers
-
-
-def detectar_circulos(zona_gray):
-    """
-    Devuelve lista de (x,y,r) en coordenadas de la zona recortada.
-    """
-    g = cv2.GaussianBlur(zona_gray, (7, 7), 0)
-
-    # HoughCircles suele funcionar muy bien con estos círculos
-    circles = cv2.HoughCircles(
-        g,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=28,
-        param1=120,
-        param2=28,
-        minRadius=10,
-        maxRadius=28
-    )
-
-    if circles is None:
-        return []
-
-    circles = np.round(circles[0, :]).astype("int")
-    # filtrar duplicados cercanos
-    out = []
-    for (x, y, r) in circles:
-        if r <= 0:
-            continue
-        ok = True
-        for (xx, yy, rr) in out:
-            if (x - xx) ** 2 + (y - yy) ** 2 < 16**2:
-                ok = False
-                break
-        if ok:
-            out.append((x, y, r))
-    return out
-
-
-def detectar_respuestas_por_circulos(img_a4, th_a4, filas, debug_a4=None):
-    """
-    - Recorta zona OMR
-    - Detecta círculos reales
-    - Cluster en 4 columnas por X
-    - Cluster en 'filas' por Y
-    - Evalúa tinta en ROI interior del círculo
-    """
+def detectar_respuestas(zona_bin, zona_gray, filas, debug_a4=None):
     if filas <= 0:
         return [], debug_a4
 
-    x0, x1 = OMR_REGION["x0"], OMR_REGION["x1"]
-    y0, y1 = OMR_REGION["y0"], OMR_REGION["y1"]
+    h, w = zona_bin.shape
 
-    zona_gray = cv2.cvtColor(img_a4[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
-    zona_th   = th_a4[y0:y1, x0:x1]
+    # margen lateral para evitar marco
+    margen = int(w * 0.04)
+    zb = zona_bin[:, margen:w - margen]
+    zg = zona_gray[:, margen:w - margen]
+    h2, w2 = zb.shape
 
-    circles = detectar_circulos(zona_gray)
-    if len(circles) < max(8, filas * 2):
-        # no hay suficientes círculos detectados
-        return None, debug_a4
+    alto_slot = int(h2 / float(MAX_FILAS_POR_HOJA))
 
-    xs = [c[0] for c in circles]
-    ys = [c[1] for c in circles]
-
-    # 4 columnas por X
-    labels_x, centers_x = _kmeans_1d(xs, 4)
-    order_cols = np.argsort(centers_x)  # izquierda->derecha
-    # mapa label->col_index (0..3)
-    label_to_col = {int(order_cols[i]): i for i in range(4)}
-
-    # filas por Y (según QR)
-    labels_y, centers_y = _kmeans_1d(ys, filas)
-    order_rows = np.argsort(centers_y)  # arriba->abajo
-    label_to_row = {int(order_rows[i]): i for i in range(filas)}
-
-    # agrupar círculos por (row, col): elegir el más cercano al centro de ese cluster
-    grid = {}
-    for idx, (x, y, r) in enumerate(circles):
-        lx = int(labels_x[idx])
-        ly = int(labels_y[idx])
-        col = label_to_col.get(lx, None)
-        row = label_to_row.get(ly, None)
-        if col is None or row is None:
-            continue
-
-        # distancia al centro del cluster (para quedarnos con el mejor)
-        dx = x - centers_x[lx]
-        dy = y - centers_y[ly]
-        d2 = float(dx*dx + dy*dy)
-
-        key = (row, col)
-        if key not in grid or d2 < grid[key]["d2"]:
-            grid[key] = {"x": x, "y": y, "r": r, "d2": d2}
+    # ✅ auto columnas
+    col_bounds = detectar_columnas_auto(zg)
 
     respuestas = []
-    for row in range(filas):
-        scores = []
-        coords = []
-        for col in range(4):
-            cell = grid.get((row, col))
-            if not cell:
-                scores.append(0.0)
-                coords.append(None)
+    for i in range(filas):
+        y0 = i * alto_slot
+        y1 = (i + 1) * alto_slot
+        fila = zb[y0:y1, :]
+
+        dens = []
+        rois = []
+
+        for j in range(4):
+            x0 = col_bounds[j]
+            x1 = col_bounds[j + 1]
+            celda = fila[:, x0:x1]
+
+            if celda.size == 0:
+                dens.append(0.0)
+                rois.append((x0, y0, x1, y1))
                 continue
 
-            cx, cy, r = int(cell["x"]), int(cell["y"]), int(cell["r"])
-            # ROI interior circular aproximada con cuadrado interior
-            pad = int(r * INNER_PAD)
-            rx0 = max(cx - r + pad, 0)
-            rx1 = min(cx + r - pad, zona_th.shape[1] - 1)
-            ry0 = max(cy - r + pad, 0)
-            ry1 = min(cy + r - pad, zona_th.shape[0] - 1)
+            ih, iw = celda.shape
+            pad_x = int(iw * INNER_PAD_X)
+            pad_y = int(ih * INNER_PAD_Y)
 
-            roi = zona_th[ry0:ry1, rx0:rx1]
-            if roi.size == 0:
-                score = 0.0
-            else:
-                score = cv2.countNonZero(roi) / float(roi.size)
+            inner = celda[pad_y:ih - pad_y, pad_x:iw - pad_x]
+            if inner.size == 0:
+                inner = celda
 
-            scores.append(float(score))
-            coords.append((cx, cy, r))
+            score = cv2.countNonZero(inner) / float(inner.size)
+            dens.append(score)
+            rois.append((x0, y0, x1, y1))
 
-        max_d = max(scores)
-        best = int(np.argmax(scores))
-        second = sorted(scores, reverse=True)[1] if len(scores) >= 2 else 0.0
+        max_d = float(max(dens))
+        idx = int(np.argmax(dens))
+        second = float(sorted(dens, reverse=True)[1])
 
         if max_d < UMBRAL_VACIO:
             resp = ""
         elif (second > UMBRAL_DOBLE_ABS) and (second > max_d * UMBRAL_DOBLE_RATIO):
             resp = "X"
         else:
-            resp = OPCIONES[best]
+            resp = OPCIONES[idx]
 
         respuestas.append(resp)
 
+        # debug overlay
         if debug_a4 is not None:
-            # dibujar círculos
-            for col in range(4):
-                c = coords[col]
-                if not c:
-                    continue
-                cx, cy, r = c
-                cv2.circle(debug_a4, (x0 + cx, y0 + cy), r, (0, 255, 0), 2)
-            # resaltar la elegida
-            if resp and resp != "X":
-                c = coords[best]
-                if c:
-                    cx, cy, r = c
-                    cv2.circle(debug_a4, (x0 + cx, y0 + cy), r, (0, 0, 255), 3)
+            for j in range(4):
+                x0, yy0, x1, yy1 = rois[j]
+                X0 = OMR_REGION["x0"] + margen + x0
+                X1 = OMR_REGION["x0"] + margen + x1
+                Y0 = OMR_REGION["y0"] + yy0
+                Y1 = OMR_REGION["y0"] + yy1
 
-            # etiqueta pregunta
+                cv2.rectangle(debug_a4, (X0, Y0), (X1, Y1), (0, 255, 0), 2)
+                if resp and resp != "X" and OPCIONES[j] == resp:
+                    cv2.rectangle(debug_a4, (X0, Y0), (X1, Y1), (0, 0, 255), 3)
+
             cv2.putText(
                 debug_a4,
-                f"{row+1}:{resp or '-'}",
-                (x0 - 210, y0 + int(centers_y[order_rows[row]]) + 8),
+                f"{i+1}:{resp or '-'}",
+                (OMR_REGION["x0"] - 200, OMR_REGION["y0"] + (i + 1) * alto_slot - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
                 (0, 0, 255) if resp == "X" else (0, 0, 0),
@@ -470,7 +458,6 @@ def detectar_respuestas_por_circulos(img_a4, th_a4, filas, debug_a4=None):
             )
 
     return respuestas, debug_a4
-
 
 # ============================================================
 # PIPELINE PRINCIPAL ✅ (QR imprescindible)
@@ -481,14 +468,14 @@ def procesar_omr(binario):
     if img is None:
         return {"ok": False, "error": "Imagen inválida"}
 
-    # 0) QR antes de normalizar
+    # 0) QR antes de normalizar (a veces mejor)
     codigo0, debug_qr0 = leer_qr_robusto(img)
     parsed0 = parsear_codigo_qr(codigo0) if codigo0 else None
 
-    # 1) Normalizar A4 por marcas
+    # 1) normalizar A4 con marcas
     img_a4 = normalizar_a4_con_marcas(img)
 
-    # 2) QR después de normalizar si falló
+    # 2) QR después de normalizar si falló antes
     codigo, debug_qr = codigo0, debug_qr0
     parsed = parsed0
     if not parsed:
@@ -507,7 +494,21 @@ def procesar_omr(binario):
     # 3) binarizar tinta
     th = binarizar_tinta_pro(img_a4)
 
-    # 4) filas según QR
+    # 4) recorte OMR
+    zona_bin = th[OMR_REGION["y0"]:OMR_REGION["y1"], OMR_REGION["x0"]:OMR_REGION["x1"]]
+    zona_gray = cv2.cvtColor(img_a4[OMR_REGION["y0"]:OMR_REGION["y1"], OMR_REGION["x0"]:OMR_REGION["x1"]], cv2.COLOR_BGR2GRAY)
+
+    # debug A4
+    debug_a4 = img_a4.copy()
+    cv2.rectangle(
+        debug_a4,
+        (OMR_REGION["x0"], OMR_REGION["y0"]),
+        (OMR_REGION["x1"], OMR_REGION["y1"]),
+        (255, 0, 0),
+        3
+    )
+
+    # 5) filas según QR
     filas, offset = filas_a_leer(num_preguntas, pagina)
     if filas <= 0:
         return {
@@ -522,36 +523,10 @@ def procesar_omr(binario):
             "debug_qr": debug_qr
         }
 
-    debug_a4 = img_a4.copy()
+    # 6) detectar respuestas (con auto columnas)
+    respuestas_lista, debug_a4 = detectar_respuestas(zona_bin, zona_gray, filas, debug_a4)
 
-    # dibujar zona OMR para ver encuadre
-    cv2.rectangle(
-        debug_a4,
-        (OMR_REGION["x0"], OMR_REGION["y0"]),
-        (OMR_REGION["x1"], OMR_REGION["y1"]),
-        (255, 0, 0),
-        3
-    )
-
-    # 5) detectar respuestas por círculos (sin rejilla fija)
-    respuestas_lista, debug_a4 = detectar_respuestas_por_circulos(img_a4, th, filas, debug_a4)
-
-    if respuestas_lista is None:
-        # fallback: si Hough fallara algún día, devolvemos error + debug
-        return {
-            "ok": False,
-            "error": "No se pudieron detectar los círculos OMR (HoughCircles)",
-            "codigo": codigo,
-            "id_examen": id_examen,
-            "id_alumno": id_alumno,
-            "fecha_examen": fecha_examen,
-            "num_preguntas": num_preguntas,
-            "pagina": pagina,
-            "debug_image": b64jpg(debug_a4, 85),
-            "debug_qr": debug_qr
-        }
-
-    # 6) dict global (1..60)
+    # 7) salida dict global
     respuestas = {}
     for i, r in enumerate(respuestas_lista, start=1):
         respuestas[str(offset + i)] = r
@@ -569,7 +544,6 @@ def procesar_omr(binario):
         "debug_qr": debug_qr
     }
 
-
 # ============================================================
 # ENDPOINTS
 # ============================================================
@@ -577,16 +551,13 @@ def procesar_omr(binario):
 def corregir_omr():
     if "imagen" not in request.files:
         return jsonify({"ok": False, "error": "Falta imagen"}), 400
-
     binario = request.files["imagen"].read()
     res = procesar_omr(binario)
     return jsonify(res)
 
-
 @app.route("/")
 def home():
     return "Servidor OMR ✅ (/corregir_omr)"
-
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
