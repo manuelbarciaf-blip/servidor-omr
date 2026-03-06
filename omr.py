@@ -16,10 +16,10 @@ OPCIONES = ["A", "B", "C", "D"]
 # Zona OMR grande (para encontrar círculos). La ajustamos más ARRIBA para incluir la 1.
 # Si tu plantilla cambia, retoca estos 4 números.
 OMR_REGION = {
-    "y0": 360,     # ⬅️ subimos para coger la pregunta 1
-    "y1": 3300,    # ⬅️ bajamos para coger hasta la 30
-    "x0": 450,     # ⬅️ ampliamos izquierda
-    "x1": 1900     # ⬅️ ampliamos derecha
+    "y0": 260,     # ⬅️ subimos para coger la pregunta 1
+    "y1": 3320,    # ⬅️ bajamos para coger hasta la 30
+    "x0": 430,     # ⬅️ ampliamos izquierda
+    "x1": 1880     # ⬅️ ampliamos derecha
 }
 
 MAX_FILAS_POR_HOJA = 30
@@ -495,6 +495,7 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
 
     zona_gray = cv2.cvtColor(zona_color, cv2.COLOR_BGR2GRAY)
 
+    # Rectángulo azul de la zona OMR
     if debug_a4 is not None:
         cv2.rectangle(
             debug_a4,
@@ -506,16 +507,22 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
 
     circles = detectar_circulos(zona_gray)
 
+    # Todos los círculos detectados en ROJO
     if debug_a4 is not None:
         for (x, y, r) in circles:
-            cv2.circle(debug_a4, (OMR_REGION["x0"] + x, OMR_REGION["y0"] + y), r, (0, 180, 255), 2)
+            cv2.circle(
+                debug_a4,
+                (OMR_REGION["x0"] + x, OMR_REGION["y0"] + y),
+                r,
+                (0, 0, 255),
+                2
+            )
 
     if len(circles) < 20:
         return [], debug_a4
 
     filas_groups = agrupar_filas(circles, filas)
     if len(filas_groups) < filas:
-        # completamos con filas vacías si hiciera falta
         filas_groups += [[] for _ in range(filas - len(filas_groups))]
 
     col_centers = cluster_columnas_x(circles)
@@ -527,9 +534,8 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
     for row_i in range(filas):
         idxs = filas_groups[row_i]
 
-        # si la fila viene vacía, intentamos buscar círculos cercanos a la Y esperada
+        # Si la fila viene vacía, buscar círculos cercanos a la Y esperada
         if not idxs:
-            # estimación Y usando paso medio entre filas detectadas
             ys_detectadas = []
             for fila in filas_groups:
                 if fila:
@@ -554,6 +560,7 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
         scores = {c: 0.0 for c in OPCIONES}
         elegidos = {}
 
+        # Elegir el círculo más cercano a cada centro de columna
         for ci, letter in enumerate(OPCIONES):
             target_x = col_centers[ci]
 
@@ -575,11 +582,6 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
             elegidos[letter] = (x, y, r)
             scores[letter] = score_circulo(zona_bin, x, y, r)
 
-            if debug_a4 is not None:
-                cx = OMR_REGION["x0"] + x
-                cy = OMR_REGION["y0"] + y
-                cv2.rectangle(debug_a4, (cx - r, cy - r), (cx + r, cy + r), (0, 255, 0), 2)
-
         orden = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best_letter, best_val = orden[0]
         second_val = orden[1][1]
@@ -593,21 +595,38 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
 
         respuestas.append(resp)
 
-        if debug_a4 is not None and idxs:
-            y_mean = int(np.mean([circles[i][1] for i in idxs]))
-            yy = OMR_REGION["y0"] + y_mean
-            cv2.putText(
-                debug_a4,
-                f"{row_i+1}:{resp or '-'}",
-                (OMR_REGION["x0"] - 170, yy + 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 0, 255) if resp == "X" else (0, 0, 0),
-                2
-            )
+        if debug_a4 is not None:
+            # Círculos usados para esa fila en VERDE
+            for letter in OPCIONES:
+                if letter not in elegidos:
+                    continue
+                x, y, r = elegidos[letter]
+                cx = OMR_REGION["x0"] + x
+                cy = OMR_REGION["y0"] + y
+                cv2.circle(debug_a4, (cx, cy), r, (0, 255, 0), 2)
+
+            # Respuesta final en AMARILLO
+            if resp in elegidos and resp != "X":
+                x, y, r = elegidos[resp]
+                cx = OMR_REGION["x0"] + x
+                cy = OMR_REGION["y0"] + y
+                cv2.circle(debug_a4, (cx, cy), r + 2, (0, 255, 255), 3)
+
+            # Etiqueta de texto
+            if idxs:
+                y_mean = int(np.mean([circles[i][1] for i in idxs]))
+                yy = OMR_REGION["y0"] + y_mean
+                cv2.putText(
+                    debug_a4,
+                    f"{row_i+1}:{resp or '-'}",
+                    (OMR_REGION["x0"] - 170, yy + 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 0, 255) if resp == "X" else (0, 0, 0),
+                    2
+                )
 
     return respuestas, debug_a4
-
 
 # ============================================================
 # PIPELINE PRINCIPAL ✅
