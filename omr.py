@@ -16,10 +16,10 @@ OPCIONES = ["A", "B", "C", "D"]
 # Zona OMR grande (para encontrar círculos). La ajustamos más ARRIBA para incluir la 1.
 # Si tu plantilla cambia, retoca estos 4 números.
 OMR_REGION = {
-    "y0": 320,     # ⬅️ subimos para coger la pregunta 1
-    "y1": 3310,    # ⬅️ bajamos para coger hasta la 30
-    "x0": 460,     # ⬅️ ampliamos izquierda
-    "x1": 1890     # ⬅️ ampliamos derecha
+    "y0": 360,     # ⬅️ subimos para coger la pregunta 1
+    "y1": 3300,    # ⬅️ bajamos para coger hasta la 30
+    "x0": 450,     # ⬅️ ampliamos izquierda
+    "x1": 1900     # ⬅️ ampliamos derecha
 }
 
 MAX_FILAS_POR_HOJA = 30
@@ -346,26 +346,26 @@ def detectar_circulos(zona_gray):
 
 def agrupar_filas(circulos, filas_esperadas):
     """
-    Agrupa círculos por filas usando distancias en Y (sin asumir rejilla fija).
-    Devuelve: lista de filas, cada fila es lista de indices de círculos.
+    Agrupa círculos por filas usando distancias en Y, de forma más tolerante.
+    Devuelve una lista de filas; cada fila es una lista de índices de círculos.
     """
     if not circulos:
         return []
 
-    ys = sorted([c[1] for c in circulos])
+    # ordenar índices por Y
+    idx_sorted = sorted(range(len(circulos)), key=lambda i: circulos[i][1])
+    ys = [circulos[i][1] for i in idx_sorted]
+
     if len(ys) < 8:
         return []
 
-    diffs = [ys[i+1] - ys[i] for i in range(len(ys)-1)]
-    diffs = [d for d in diffs if d > 1]
+    diffs = [ys[i + 1] - ys[i] for i in range(len(ys) - 1)]
+    diffs = [d for d in diffs if d > 2]
     if not diffs:
         return []
 
-    med = float(np.median(diffs))
-    thr = max(14.0, med * 0.60)
-
-    # ordenar por Y
-    idx_sorted = sorted(range(len(circulos)), key=lambda i: circulos[i][1])
+    paso_medio = float(np.median(diffs))
+    thr = max(18.0, paso_medio * 0.85)   # ⬅️ más tolerante que antes
 
     filas = []
     actual = [idx_sorted[0]]
@@ -375,22 +375,63 @@ def agrupar_filas(circulos, filas_esperadas):
         y = circulos[idx][1]
         if abs(y - y_ref) <= thr:
             actual.append(idx)
-            y_ref = (y_ref * 0.7 + y * 0.3)
+            y_ref = 0.75 * y_ref + 0.25 * y
         else:
             filas.append(actual)
             actual = [idx]
             y_ref = y
+
     filas.append(actual)
 
-    # Orden por y medio
+    # quitar grupos ridículos, pero permitir 2 círculos
+    filas = [fila for fila in filas if len(fila) >= 2]
+
+    # ordenar por Y medio
     filas.sort(key=lambda fila: np.mean([circulos[i][1] for i in fila]))
 
-    # Nos quedamos con las primeras filas_esperadas (la hoja empieza arriba)
-    if len(filas) > filas_esperadas:
-        filas = filas[:filas_esperadas]
+    if not filas:
+        return []
 
-    return filas
+    # --------------------------------------------------------
+    # RECONSTRUCCIÓN DE FILAS FALTANTES
+    # --------------------------------------------------------
+    y_medios = [float(np.mean([circulos[i][1] for i in fila])) for fila in filas]
 
+    if len(y_medios) >= 2:
+        gaps = [y_medios[i + 1] - y_medios[i] for i in range(len(y_medios) - 1)]
+        gaps = [g for g in gaps if g > 5]
+        paso = float(np.median(gaps)) if gaps else paso_medio
+    else:
+        paso = paso_medio
+
+    paso = max(22.0, paso)
+
+    # crear anclas esperadas empezando en la primera fila detectada
+    y0 = y_medios[0]
+    y_esperadas = [y0 + i * paso for i in range(filas_esperadas)]
+
+    filas_finales = []
+    usados = set()
+
+    for y_exp in y_esperadas:
+        mejor_j = None
+        mejor_d = None
+        for j, y_real in enumerate(y_medios):
+            if j in usados:
+                continue
+            d = abs(y_real - y_exp)
+            if mejor_d is None or d < mejor_d:
+                mejor_d = d
+                mejor_j = j
+
+        # aceptar si cae razonablemente cerca
+        if mejor_j is not None and mejor_d <= max(20.0, paso * 0.55):
+            filas_finales.append(filas[mejor_j])
+            usados.add(mejor_j)
+        else:
+            filas_finales.append([])  # fila vacía/reconstruida
+
+    return filas_finales
 
 def cluster_columnas_x(circulos):
     """
@@ -439,15 +480,13 @@ def score_circulo(mask_bin, cx, cy, r):
 
     return float(cv2.countNonZero(inside)) / float(inside.size)
 
-
 def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
     """
-    Detecta respuestas usando círculos reales. Devuelve:
-      respuestas_lista, debug_a4
+    Detecta respuestas usando círculos reales.
+    Devuelve: respuestas_lista, debug_a4
     """
     debug_a4 = img_a4.copy() if debug else None
 
-    # recortar zona OMR
     zona_color = _safe_crop(img_a4, OMR_REGION["x0"], OMR_REGION["y0"], OMR_REGION["x1"], OMR_REGION["y1"])
     zona_bin = _safe_crop(th_bin, OMR_REGION["x0"], OMR_REGION["y0"], OMR_REGION["x1"], OMR_REGION["y1"])
 
@@ -456,7 +495,6 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
 
     zona_gray = cv2.cvtColor(zona_color, cv2.COLOR_BGR2GRAY)
 
-    # dibujar rectángulo OMR
     if debug_a4 is not None:
         cv2.rectangle(
             debug_a4,
@@ -468,38 +506,54 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
 
     circles = detectar_circulos(zona_gray)
 
-    # Debug: círculos detectados
     if debug_a4 is not None:
         for (x, y, r) in circles:
             cv2.circle(debug_a4, (OMR_REGION["x0"] + x, OMR_REGION["y0"] + y), r, (0, 180, 255), 2)
 
     if len(circles) < 20:
-        # muy pocos círculos => no fiable
         return [], debug_a4
 
-    # agrupar filas
     filas_groups = agrupar_filas(circles, filas)
-    if len(filas_groups) < max(5, int(filas * 0.5)):
-        return [], debug_a4
+    if len(filas_groups) < filas:
+        # completamos con filas vacías si hiciera falta
+        filas_groups += [[] for _ in range(filas - len(filas_groups))]
 
-    # centros de columnas
     col_centers = cluster_columnas_x(circles)
     if not col_centers or len(col_centers) != 4:
         return [], debug_a4
 
-    # ahora construimos respuestas fila a fila
     respuestas = []
 
     for row_i in range(filas):
-        if row_i >= len(filas_groups):
+        idxs = filas_groups[row_i]
+
+        # si la fila viene vacía, intentamos buscar círculos cercanos a la Y esperada
+        if not idxs:
+            # estimación Y usando paso medio entre filas detectadas
+            ys_detectadas = []
+            for fila in filas_groups:
+                if fila:
+                    ys_detectadas.append(np.mean([circles[i][1] for i in fila]))
+
+            if ys_detectadas:
+                y_base = min(ys_detectadas)
+                if len(ys_detectadas) >= 2:
+                    gaps = [ys_detectadas[i + 1] - ys_detectadas[i] for i in range(len(ys_detectadas) - 1)]
+                    gaps = [g for g in gaps if g > 5]
+                    paso = np.median(gaps) if gaps else 55.0
+                else:
+                    paso = 55.0
+
+                y_esperada = y_base + row_i * paso
+                idxs = [i for i, c in enumerate(circles) if abs(c[1] - y_esperada) <= max(18, paso * 0.35)]
+
+        if not idxs:
             respuestas.append("")
             continue
 
-        idxs = filas_groups[row_i]
-        # en esa fila, asignar cada círculo a la columna más cercana
         scores = {c: 0.0 for c in OPCIONES}
+        elegidos = {}
 
-        # elegimos por columna: para cada columna, el círculo más cercano en X
         for ci, letter in enumerate(OPCIONES):
             target_x = col_centers[ci]
 
@@ -518,15 +572,14 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
                 continue
 
             x, y, r = best
+            elegidos[letter] = (x, y, r)
             scores[letter] = score_circulo(zona_bin, x, y, r)
 
-            # Debug: cajita pequeña en el círculo elegido
             if debug_a4 is not None:
                 cx = OMR_REGION["x0"] + x
                 cy = OMR_REGION["y0"] + y
                 cv2.rectangle(debug_a4, (cx - r, cy - r), (cx + r, cy + r), (0, 255, 0), 2)
 
-        # decisión por scores
         orden = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best_letter, best_val = orden[0]
         second_val = orden[1][1]
@@ -540,8 +593,7 @@ def detectar_respuestas_por_circulos(img_a4, th_bin, filas, debug=True):
 
         respuestas.append(resp)
 
-        # Debug: etiqueta pregunta
-        if debug_a4 is not None:
+        if debug_a4 is not None and idxs:
             y_mean = int(np.mean([circles[i][1] for i in idxs]))
             yy = OMR_REGION["y0"] + y_mean
             cv2.putText(
@@ -663,4 +715,3 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
