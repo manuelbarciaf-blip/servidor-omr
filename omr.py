@@ -13,8 +13,9 @@ app = Flask(__name__)
 A4_W, A4_H = 2480, 3508
 OPCIONES = ["A", "B", "C", "D"]
 
+# Subimos un poco la zona para coger bien la pregunta 1
 OMR_REGION = {
-    "y0": 300,   # un poco más arriba
+    "y0": 300,
     "y1": 3320,
     "x0": 430,
     "x1": 1880
@@ -22,22 +23,19 @@ OMR_REGION = {
 
 MAX_FILAS_POR_HOJA = 30
 
-# Umbrales de decisión
 UMBRAL_VACIO = 0.090
 UMBRAL_DOBLE_RATIO = 0.90
 UMBRAL_DOBLE_ABS = 0.060
 
-# Geometría del círculo para score
-R_INNER = 0.34       # ⬅️ más pequeño: solo centro real
+# Burbuja interior más pequeña
+R_INNER = 0.34
 R_RING_IN = 0.72
 R_RING_OUT = 0.98
 
-# Pesos del score
 PESO_AZUL = 0.95
 PESO_OSCURO = 0.45
 PESO_BORDE = 0.95
 
-# Detección de círculos
 HOUGH_DP = 1.2
 HOUGH_MINDIST = 34
 HOUGH_PARAM1 = 120
@@ -56,7 +54,7 @@ def b64jpg(img_bgr, quality=85):
     return base64.b64encode(buff).decode("utf-8")
 
 
-def safe_crop(img, x0, y0, x1, y1):
+def _safe_crop(img, x0, y0, x1, y1):
     h, w = img.shape[:2]
     x0 = max(0, min(w, int(x0)))
     x1 = max(0, min(w, int(x1)))
@@ -68,7 +66,7 @@ def safe_crop(img, x0, y0, x1, y1):
 
 
 # ============================================================
-# NORMALIZAR A4 CON MARCAS
+# 1) NORMALIZAR A4 con marcas negras
 # ============================================================
 def normalizar_a4_con_marcas(img_bgr):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -84,7 +82,6 @@ def normalizar_a4_con_marcas(img_bgr):
 
     h, w = gray.shape[:2]
     candidates = []
-
     for c in cnts:
         area = cv2.contourArea(c)
         if area < 2200:
@@ -113,10 +110,8 @@ def normalizar_a4_con_marcas(img_bgr):
 
     chosen = {}
     used = set()
-
     for name, t in targets.items():
-        best_i = None
-        best_d = None
+        best_i, best_d = None, None
         for i in range(len(pts)):
             if i in used:
                 continue
@@ -135,15 +130,16 @@ def normalizar_a4_con_marcas(img_bgr):
     dst = np.array([[0, 0], [A4_W, 0], [A4_W, A4_H], [0, A4_H]], dtype=np.float32)
 
     M = cv2.getPerspectiveTransform(src, dst)
-    return cv2.warpPerspective(img_bgr, M, (A4_W, A4_H))
+    warped = cv2.warpPerspective(img_bgr, M, (A4_W, A4_H))
+    return warped
 
 
 # ============================================================
-# QR ROBUSTO
+# 2) QR ROBUSTO  ✅ DEJAMOS EL BLOQUE QUE TE FUNCIONABA
 # ============================================================
 def _try_decode(det, img_bgr):
     try:
-        ok, decoded_info, _, _ = det.detectAndDecodeMulti(img_bgr)
+        ok, decoded_info, points, _ = det.detectAndDecodeMulti(img_bgr)
         if ok and decoded_info:
             for s in decoded_info:
                 s = (s or "").strip()
@@ -158,14 +154,18 @@ def _try_decode(det, img_bgr):
 
 
 def _variants(img_bgr):
-    out = [img_bgr]
+    out = []
+    out.append(img_bgr)
+
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
     clahe = cv2.createCLAHE(clipLimit=2.8, tileGridSize=(8, 8))
     g1 = clahe.apply(gray)
     out.append(cv2.cvtColor(g1, cv2.COLOR_GRAY2BGR))
 
-    k = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    k = np.array([[0, -1, 0],
+                  [-1, 5, -1],
+                  [0, -1, 0]], dtype=np.float32)
     sh = cv2.filter2D(g1, -1, k)
     out.append(cv2.cvtColor(sh, cv2.COLOR_GRAY2BGR))
 
@@ -182,63 +182,63 @@ def _variants(img_bgr):
 
 
 def leer_qr_robusto(img_bgr):
+    """
+    Devuelve (texto_qr or None, debug_qr_base64)
+    """
     det = cv2.QRCodeDetector()
 
-    rotations = [
-        img_bgr,
-        cv2.rotate(img_bgr, cv2.ROTATE_90_CLOCKWISE),
-        cv2.rotate(img_bgr, cv2.ROTATE_180),
-        cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE),
+    # Intento 0: imagen completa
+    for v in _variants(img_bgr):
+        s = _try_decode(det, v)
+        if s:
+            return s, None
+
+    # ROI fijo arriba izquierda
+    qr_roi = img_bgr[0:1200, 0:1200].copy()
+    debug_qr = b64jpg(qr_roi, 90)
+
+    scales = [1.0, 1.8, 2.6, 3.4]
+    rots = [
+        lambda im: im,
+        lambda im: cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE),
+        lambda im: cv2.rotate(im, cv2.ROTATE_180),
+        lambda im: cv2.rotate(im, cv2.ROTATE_90_COUNTERCLOCKWISE),
     ]
-
-    for im in rotations:
-        for v in _variants(im):
-            s = _try_decode(det, v)
-            if s:
-                return s, None
-
-    qr_roi = safe_crop(img_bgr, 0, 0, 1400, 1400)
-    debug_qr = b64jpg(qr_roi, 90) if qr_roi is not None else None
-    if qr_roi is None:
-        return None, None
-
-    scales = [1.0, 1.8, 2.6, 3.4, 4.0]
 
     for sc in scales:
         roi = qr_roi
         if sc != 1.0:
             roi = cv2.resize(roi, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
 
-        rots = [
-            roi,
-            cv2.rotate(roi, cv2.ROTATE_90_CLOCKWISE),
-            cv2.rotate(roi, cv2.ROTATE_180),
-            cv2.rotate(roi, cv2.ROTATE_90_COUNTERCLOCKWISE),
-        ]
-
-        for r in rots:
-            for v in _variants(r):
+        for rot in rots:
+            rr = rot(roi)
+            for v in _variants(rr):
                 s = _try_decode(det, v)
                 if s:
                     return s, debug_qr
 
-    big = safe_crop(img_bgr, 0, 0, 1700, 1700)
-    if big is not None:
-        for v in _variants(big):
-            s = _try_decode(det, v)
-            if s:
-                return s, debug_qr
+    big = img_bgr[0:1600, 0:1600].copy()
+    for v in _variants(big):
+        s = _try_decode(det, v)
+        if s:
+            return s, debug_qr
 
     return None, debug_qr
 
 
 def parsear_codigo_qr(codigo):
     """
-    Formato real:
+    QR real:
       id_examen|id_alumno|fecha|num_preguntas|pagina(opcional)
+
+    Ej:
+      261|276|2026-02-16|20
+      261|276|2026-02-16|60|2
     """
     if not codigo:
         return None
+
+    codigo = str(codigo).strip()
 
     if "|" in codigo:
         partes = [p.strip() for p in codigo.split("|")]
@@ -248,23 +248,26 @@ def parsear_codigo_qr(codigo):
                 id_alumno = int(partes[1])
                 fecha = partes[2]
                 num_preg = int(partes[3])
-                pagina = int(partes[4]) if len(partes) >= 5 and partes[4].isdigit() else 1
+
+                pagina = 1
+                if len(partes) >= 5 and partes[4].isdigit():
+                    pagina = int(partes[4])
+
                 pagina = 1 if pagina not in (1, 2) else pagina
                 return id_examen, id_alumno, fecha, num_preg, pagina
             except:
-                pass
+                return None
 
     nums = re.findall(r"\d+", codigo)
-    if len(nums) < 6:
+    if len(nums) < 4:
         return None
 
     try:
         id_examen = int(nums[0])
         id_alumno = int(nums[1])
-        fecha = f"{nums[2]}-{nums[3].zfill(2)}-{nums[4].zfill(2)}"
-        num_preg = int(nums[5])
-        pagina = int(nums[6]) if len(nums) >= 7 else 1
-        pagina = 1 if pagina not in (1, 2) else pagina
+        fecha = ""
+        num_preg = int(nums[-1])
+        pagina = 1
         return id_examen, id_alumno, fecha, num_preg, pagina
     except:
         return None
@@ -282,7 +285,7 @@ def filas_a_leer(num_preguntas, pagina):
 
 
 # ============================================================
-# DETECCIÓN DE CÍRCULOS
+# CÍRCULOS
 # ============================================================
 def deduplicar_circulos(circles):
     out = []
@@ -364,17 +367,15 @@ def agrupar_filas(circulos, filas_esperadas):
 
 
 # ============================================================
-# SCORE MEJORADO
+# SCORE DE BURBUJA MEJORADO
 # ============================================================
 def crear_mascaras(zona_bgr):
     hsv = cv2.cvtColor(zona_bgr, cv2.COLOR_BGR2HSV)
 
-    # azul bolígrafo
     lower_blue = np.array([85, 40, 30], dtype=np.uint8)
     upper_blue = np.array([140, 255, 255], dtype=np.uint8)
     mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
 
-    # oscuro/negro
     gray = cv2.cvtColor(zona_bgr, cv2.COLOR_BGR2GRAY)
     mask_dark = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)[1]
 
@@ -425,7 +426,7 @@ def score_circulo(mask_blue, mask_dark, cx, cy, r):
 def detectar_respuestas_por_circulos(img_a4, filas, debug=True):
     debug_a4 = img_a4.copy() if debug else None
 
-    zona_color = safe_crop(img_a4, OMR_REGION["x0"], OMR_REGION["y0"], OMR_REGION["x1"], OMR_REGION["y1"])
+    zona_color = _safe_crop(img_a4, OMR_REGION["x0"], OMR_REGION["y0"], OMR_REGION["x1"], OMR_REGION["y1"])
     if zona_color is None:
         return [], debug_a4
 
@@ -465,19 +466,17 @@ def detectar_respuestas_por_circulos(img_a4, filas, debug=True):
         row_circles = [circles[i] for i in idxs]
         row_circles.sort(key=lambda c: c[0])
 
-        # elegimos los 4 más lógicos en x
+        # Nos quedamos con los 4 más lógicos
         if len(row_circles) > 4:
-            # priorizar radios cercanos a la mediana
             rmed = np.median([c[2] for c in row_circles])
             row_circles = sorted(row_circles, key=lambda c: abs(c[2] - rmed))[:6]
             row_circles.sort(key=lambda c: c[0])
 
-        if len(row_circles) >= 4:
-            # si hay más de 4, usar extremos más consistentes
-            row_circles = row_circles[:4]
-        else:
+        if len(row_circles) < 4:
             respuestas.append("")
             continue
+
+        row_circles = row_circles[:4]
 
         scores = {}
         coords = {}
@@ -537,11 +536,14 @@ def procesar_omr(binario):
     if img is None:
         return {"ok": False, "error": "Imagen inválida"}
 
+    # QR antes de normalizar
     codigo0, debug_qr0 = leer_qr_robusto(img)
     parsed0 = parsear_codigo_qr(codigo0) if codigo0 else None
 
+    # normalizar A4
     img_a4 = normalizar_a4_con_marcas(img)
 
+    # QR después si hizo falta
     codigo, debug_qr = codigo0, debug_qr0
     parsed = parsed0
     if not parsed:
