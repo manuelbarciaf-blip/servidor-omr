@@ -20,41 +20,43 @@ def _decode_qr(image):
 
 
 def _align(image):
-    """Exige cuatro marcas negras cuadradas; nunca acepta resize como alineación fiable."""
+    """Alineación segura incluso cuando los cuadrados tocan el marco exterior."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     ih, iw = gray.shape
+    _, mask = cv2.threshold(gray, 90, 255, cv2.THRESH_BINARY_INV)
+    # El marco se une a los cuadrados: eliminar líneas antes de detectar marcas.
+    kernel_size = max(13, int(round(min(ih, iw) * 0.017)))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
+    squares = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(squares, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     candidates = []
     for cnt in contours:
-        x, y, w, h = cv2.boundingRect(cnt)
+        x, y, bw, bh = cv2.boundingRect(cnt)
         area = cv2.contourArea(cnt)
-        if w < iw * .009 or h < ih * .009 or area < iw * ih * .00008:
+        if bw == 0 or bh == 0 or area < iw * ih * 0.0005:
             continue
-        ratio = w / float(h)
-        extent = area / float(w*h)
-        if .65 < ratio < 1.4 and extent > .65 and w < iw*.10 and h < ih*.10:
-            candidates.append((x+w/2, y+h/2, area))
+        ratio, extent = bw / float(bh), area / float(bw * bh)
+        if 0.70 < ratio < 1.30 and extent > 0.65 and bw < iw * 0.1:
+            candidates.append((x + bw / 2, y + bh / 2, area))
     if len(candidates) < 4:
         raise ValueError('No se detectan las cuatro marcas de referencia')
-    # Elegir una marca por cada cuadrante en las posiciones esperadas de la hoja.
-    expected = [(24.5/210,39.5/297),(185.5/210,39.5/297),
-                (185.5/210,255.5/297),(24.5/210,255.5/297)]
-    used = set()
-    points = []
+    expected = [(24.5 / 210, 39.5 / 297),
+                (185.5 / 210, 39.5 / 297),
+                (185.5 / 210, 255.5 / 297),
+                (24.5 / 210, 255.5 / 297)]
+    used, points = set(), []
     for fx, fy in expected:
-        options = [(i, (c[0]/iw-fx)**2+(c[1]/ih-fy)**2) for i,c in enumerate(candidates) if i not in used]
-        idx, dist = min(options, key=lambda p:p[1])
-        if dist > .035:  # escaneo excesivamente recortado o marca equivocada
+        options = [(i, (c[0] / iw - fx)**2 + (c[1] / ih - fy)**2)
+                   for i, c in enumerate(candidates) if i not in used]
+        idx, dist = min(options, key=lambda p: p[1])
+        if dist > 0.012:
             raise ValueError('Las marcas no coinciden con la geometría OMR')
         used.add(idx)
         points.append(candidates[idx][:2])
     source = np.float32(points)
-    target = np.float32([[245,395],[1855,395],[1855,2555],[245,2555]])
-    transform = cv2.getPerspectiveTransform(source,target)
-    warped = cv2.warpPerspective(image,transform,(W,H),borderValue=(255,255,255))
-    return warped
-
+    target = np.float32([[245, 395], [1855, 395], [1855, 2555], [245, 2555]])
+    transform = cv2.getPerspectiveTransform(source, target)
+    return cv2.warpPerspective(image, transform, (W, H), borderValue=(255, 255, 255))
 
 def procesar_clases360(binario, filas=20, opciones=None):
     """Devuelve marcas y dudas; el servidor PHP debe validar token y tipos de pregunta."""
@@ -80,6 +82,7 @@ def procesar_clases360(binario, filas=20, opciones=None):
     for i in range(filas):
         cy = round((84 + i*5.7)*10)
         scores = []
+        exteriores = []
         for j in range(int(opciones[i])):
             cx = round((75+j*12)*10)
             # Interior del círculo, excluye la línea impresa (radio exterior 2.35 mm).
@@ -87,13 +90,26 @@ def procesar_clases360(binario, filas=20, opciones=None):
             roi = gray[cy-r:cy+r+1,cx-r:cx+r+1]
             yy,xx = np.ogrid[-r:r+1,-r:r+1]
             vals = roi[(xx*xx+yy*yy)<=r*r]
-            scores.append(round(float(np.mean(vals < 120)),3))
+            scores.append(round(float(np.mean(vals < 120)), 3))
+            # Señales de tachadura que sobresalen del círculo.
+            rr = 43
+            box = gray[cy-rr:cy+rr+1, cx-rr:cx+rr+1]
+            if box.shape != (2*rr+1, 2*rr+1):
+                raise ValueError('Casilla fuera de la hoja')
+            ay, ax = np.ogrid[-rr:rr+1, -rr:rr+1]
+            annulus = ((ax*ax + ay*ay >= 30*30) &
+                       (ax*ax + ay*ay <= 43*43))
+            exteriores.append(float(np.mean(box[annulus] < 120)))
         # Umbrales deliberadamente conservadores: requieren revisión hasta calibración.
         certain = [LETTERS[j] for j,s in enumerate(scores) if s >= .50]
         possible = [LETTERS[j] for j,s in enumerate(scores) if .12 <= s < .50]
-        estado = 'revisar' if possible else ('marcada' if certain else 'blanco')
-        results.append({'numero':i+1,'marcas':certain,'posibles':possible,
-                        'estado':estado,'densidades':dict(zip(LETTERS,scores))})
+        baseline = float(np.median(exteriores))
+        tachaduras = [LETTERS[j] for j, ext in enumerate(exteriores)
+                      if ext > 0.27 and ext > baseline + 0.09]
+        estado = 'revisar' if possible or tachaduras else ('marcada' if certain else 'blanco')
+        results.append({'numero':i+1, 'marcas':certain, 'posibles':possible,
+                        'tachaduras_posibles':tachaduras, 'estado':estado,
+                        'densidades':dict(zip(LETTERS,scores))})
     return {'ok':True,'token':token.split(':',1)[1],
             'respuestas':results,
             'requiere_revision':any(r['estado']=='revisar' for r in results),
