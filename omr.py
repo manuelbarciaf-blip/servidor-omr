@@ -7,6 +7,10 @@ import re
 
 app = Flask(__name__)
 
+# Convertidor PDF exclusivo de Clases360; rrhhclases permanece intacto.
+from clases360_pdf import activar_pdf_clases360
+activar_pdf_clases360(app)
+
 # ============================================================
 # CONFIG ✅ (Ajustada a tu hoja)
 # ============================================================
