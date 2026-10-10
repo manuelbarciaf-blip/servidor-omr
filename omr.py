@@ -714,6 +714,38 @@ def procesar_omr(binario):
 
 
 # ============================================================
+# CLASES360: endpoint independiente del lector antiguo
+# ============================================================
+@app.route("/clases360/leer_omr", methods=["POST"])
+def leer_omr_clases360():
+    from clases360_omr import procesar_clases360
+
+    imagen = request.files.get("imagen")
+    if imagen is None:
+        return jsonify({"ok": False, "error": "Falta imagen"}), 400
+
+    try:
+        filas = int(request.form.get("filas", 20))
+        import json
+        opciones_raw = request.form.get("opciones")
+        opciones = json.loads(opciones_raw) if opciones_raw else None
+        if opciones is not None and (not isinstance(opciones, list) or any(type(n) is not int for n in opciones)):
+            return jsonify({"ok": False, "error": "Opciones debe ser una lista JSON de enteros"}), 400
+        if not 1 <= filas <= 30:
+            return jsonify({"ok": False, "error": "Filas fuera de rango"}), 400
+        binario = imagen.read()
+        if not binario:
+            return jsonify({"ok": False, "error": "Imagen vacía"}), 400
+        resultado = procesar_clases360(binario, filas=filas, opciones=opciones)
+        return jsonify(resultado), (200 if resultado.get("ok") else 422)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return jsonify({"ok": False, "error": "Parámetros de lectura inválidos"}), 400
+    except Exception:
+        app.logger.exception("Fallo en el lector de Clases360")
+        return jsonify({"ok": False, "error": "Error interno de lectura OMR"}), 500
+
+
+# ============================================================
 # ENDPOINTS
 # ============================================================
 @app.route("/corregir_omr", methods=["POST"])
