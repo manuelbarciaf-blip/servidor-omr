@@ -738,7 +738,7 @@ def leer_omr_clases360():
             return jsonify({"ok": False, "error": "Imagen vacía"}), 400
         resultado = procesar_clases360(binario, filas=filas, opciones=opciones)
         return jsonify(resultado), (200 if resultado.get("ok") else 422)
-    except (ValueError, TypeError, json.JSONDecodeError):
+    except (ValueError, TypeError):
         return jsonify({"ok": False, "error": "Parámetros de lectura inválidos"}), 400
     except Exception:
         app.logger.exception("Fallo en el lector de Clases360")
