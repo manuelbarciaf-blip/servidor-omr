@@ -109,8 +109,25 @@ def procesar_clases360(binario, filas=20, opciones=None):
             ay, ax = np.ogrid[-rr:rr+1, -rr:rr+1]
             annulus = ((ax*ax + ay*ay >= 30*30) & (ax*ax + ay*ay <= 43*43))
             exteriores.append(float(np.mean(box[annulus] < 120)))
-        certain = [LETTERS[j] for j, s in enumerate(scores) if s >= .50]
-        possible = [LETTERS[j] for j, s in enumerate(scores) if .12 <= s < .50]
+        # La densidad absoluta de .50 descartaba como dudosas las marcas de lápiz
+        # reales (0.20-0.49 en los escaneos de prueba). Comparar cada casilla con
+        # las otras de la misma pregunta: los interiores de burbujas vacías dan
+        # alrededor de 0; evita confundir un borde impreso con un relleno.
+        max_score = max(scores)
+        baseline_fill = float(np.median(sorted(scores)[:max(1, len(scores)-1)]))
+        certain = []
+        possible = []
+        for j, density in enumerate(scores):
+            other = max((v for k, v in enumerate(scores) if k != j), default=0.0)
+            if density >= 0.18 and density - baseline_fill >= 0.14 and density >= other * 1.8:
+                certain.append(LETTERS[j])
+            elif density >= 0.12:
+                possible.append(LETTERS[j])
+        # Una tinta muy tenue o dos burbujas con relleno comparable requieren
+        # inspección humana; nunca inventamos un acierto a partir de una duda.
+        if certain and max_score < 0.23:
+            possible.extend(certain)
+            certain = []
         baseline = float(np.median(exteriores))
         tachaduras = [LETTERS[j] for j, ext in enumerate(exteriores)
                       if ext > 0.27 and ext > baseline + 0.09]
